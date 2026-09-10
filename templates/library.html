@@ -1,0 +1,1306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0%' stop-color='%238B5CF6'/><stop offset='100%' stop-color='%236D28D9'/></linearGradient></defs><rect width='100' height='100' rx='20' fill='url(%23g)'/><path d='M50 25 C50 25 30 28 22 32 L22 72 C30 68 50 65 50 65 C50 65 70 68 78 72 L78 32 C70 28 50 25 50 25Z' fill='none' stroke='white' stroke-width='3' stroke-linejoin='round'/><line x1='50' y1='25' x2='50' y2='65' stroke='white' stroke-width='2.5'/><path d='M30 42 L42 42' stroke='white' stroke-width='2' stroke-linecap='round' opacity='.6'/><path d='M30 50 L40 50' stroke='white' stroke-width='2' stroke-linecap='round' opacity='.6'/><path d='M58 42 L70 42' stroke='white' stroke-width='2' stroke-linecap='round' opacity='.6'/><path d='M60 50 L70 50' stroke='white' stroke-width='2' stroke-linecap='round' opacity='.6'/></svg>">
+    <title>Library — Reader 3</title>
+    <style>
+        :root {
+            --primary: #6750A4;
+            --surface: #FAFAFA;
+            --on-surface: #1C1B1F;
+            --outline: #79747E;
+            --outline-variant: #E0E0E0;
+            --surface-container: #F3EDF7;
+            --transition: cubic-bezier(0.2, 0, 0, 1);
+        }
+
+        body {
+            font-family: -apple-system, 'SF Pro Display', system-ui, sans-serif;
+            background: var(--surface); color: var(--on-surface);
+            margin: 0; padding: 0; -webkit-font-smoothing: antialiased;
+            min-height: 100vh;
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 90px 40px 48px; position: relative; }
+
+        .title-wrapper {
+            display: inline-flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        /* Header */
+        header {
+            display: flex; justify-content: space-between; align-items: center;
+            margin-bottom: 48px;
+        }
+        h1 {
+            font-size: 1.6rem; font-weight: 700; margin: 0;
+            letter-spacing: -0.03em; color: var(--on-surface);
+        }
+
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+
+        /* Context menu */
+        .ctx-menu {
+            display: none; position: fixed; z-index: 10000;
+            background: white; border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.08);
+            min-width: 180px; overflow: hidden; padding: 4px 0;
+        }
+        .ctx-menu.active { display: block; }
+        .ctx-menu-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 16px; cursor: pointer; transition: background 0.12s;
+            font-size: 0.85rem; font-weight: 500; color: var(--on-surface);
+        }
+        .ctx-menu-item:hover { background: rgba(0,0,0,0.04); }
+        .ctx-menu-item svg { width: 16px; height: 16px; color: var(--outline); flex-shrink: 0; }
+        .ctx-menu-item.danger { color: #B3261E; }
+        .ctx-menu-item.danger svg { color: #B3261E; }
+
+        /* Rename modal */
+        .rename-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.4); backdrop-filter: blur(4px);
+            z-index: 10001; justify-content: center; align-items: center;
+        }
+        .rename-overlay.active { display: flex; }
+        .rename-modal {
+            background: white; border-radius: 20px; padding: 28px 32px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2); width: 90%; max-width: 400px;
+        }
+        .rename-modal h3 { margin: 0 0 16px; font-size: 1rem; font-weight: 700; }
+        .rename-modal input {
+            width: 100%; padding: 10px 14px; border: 1.5px solid var(--outline-variant);
+            border-radius: 10px; font-size: 0.9rem; outline: none;
+            box-sizing: border-box; transition: border-color 0.2s;
+        }
+        .rename-modal input:focus { border-color: var(--primary); }
+        .rename-modal-actions {
+            display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px;
+        }
+
+        /* Generic Confirm Modal */
+        .confirm-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.4); backdrop-filter: blur(4px);
+            z-index: 10002; justify-content: center; align-items: center;
+        }
+        .confirm-overlay.active { display: flex; }
+        .confirm-modal {
+            background: white; border-radius: 20px; padding: 28px 32px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2); width: 90%; max-width: 380px;
+        }
+        .confirm-modal h3 { margin: 0 0 12px; font-size: 1.1rem; font-weight: 700; }
+        .confirm-modal p { margin: 0 0 24px; font-size: 0.9rem; color: var(--outline); line-height: 1.5; }
+        .confirm-modal-actions {
+            display: flex; justify-content: flex-end; gap: 12px;
+        }
+        .confirm-btn {
+            padding: 10px 24px; border-radius: 20px; border: none;
+            font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: 0.2s;
+        }
+        .confirm-btn.secondary { background: var(--surface-container); color: var(--on-surface); }
+        .confirm-btn.danger { background: #B3261E; color: white; }
+        .confirm-btn.primary { background: var(--primary); color: white; }
+
+        /* Cover search modal */
+        .cover-modal-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.4); backdrop-filter: blur(4px);
+            z-index: 9999; justify-content: center; align-items: center;
+        }
+        .cover-modal-overlay.active { display: flex; }
+        .cover-modal {
+            background: white; border-radius: 20px; padding: 28px 32px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2); max-width: 520px; width: 90%;
+        }
+        .cover-modal h3 { margin: 0 0 16px; font-size: 1rem; }
+        .cover-search-bar {
+            display: flex; gap: 8px; margin-bottom: 14px;
+        }
+        .cover-search-bar input {
+            flex: 1; padding: 6px 12px; border: 1.5px solid var(--outline-variant, #ccc);
+            border-radius: 8px; font-size: 0.85rem; outline: none;
+        }
+        .cover-search-bar input:focus { border-color: var(--primary); }
+        .cover-search-bar button {
+            padding: 6px 14px; border: none; border-radius: 8px;
+            background: var(--primary); color: white; font-size: 0.82rem; cursor: pointer;
+        }
+        .cover-grid {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
+            margin-bottom: 16px;
+        }
+        .cover-option {
+            cursor: pointer; border-radius: 8px; overflow: hidden;
+            border: 3px solid transparent; transition: 0.2s; aspect-ratio: 2/3;
+        }
+        .cover-option:hover { border-color: var(--primary); transform: translateY(-2px); }
+        .cover-option.selected { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary); }
+        .cover-option img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .cover-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+        .cover-modal-btn {
+            padding: 8px 20px; border-radius: 20px; border: none;
+            font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: 0.2s;
+        }
+        .cover-modal-btn.cancel { background: var(--surface-container); color: var(--on-surface); }
+        .cover-modal-btn.confirm { background: var(--primary); color: white; }
+        .cover-modal-btn.confirm:disabled { opacity: 0.4; cursor: not-allowed; }
+        .cover-modal .loading { text-align: center; padding: 30px 0; color: var(--outline); font-size: 0.9rem; }
+
+
+        /* Language Toggle (Copied from Reader) */
+        #lang-toggle {
+            position: absolute; bottom: calc(100% + 45px); left: 0;
+            z-index: 100;
+            font-size: 0.75rem; font-weight: 900; letter-spacing: 0.05em;
+            color: #fff; cursor: pointer;
+            background: var(--primary); border: none; border-radius: 6px;
+            width: 36px; height: 24px; text-align: center;
+            perspective: 200px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            opacity: 0.8;
+            transition: all 0.3s var(--transition);
+        }
+        #lang-toggle:hover { 
+            transform: translateY(-1px); 
+            box-shadow: 0 6px 16px rgba(0,0,0,0.15); 
+            opacity: 1;
+        }
+        #lang-toggle .lang-inner {
+            display: flex; align-items: center; justify-content: center;
+            width: 100%; height: 100%;
+            transition: transform 0.4s ease;
+            transform-style: preserve-3d;
+            position: relative;
+        }
+        #lang-toggle .lang-current,
+        #lang-toggle .lang-target {
+            display: flex; align-items: center; justify-content: center;
+            width: 100%; height: 100%;
+            backface-visibility: hidden;
+        }
+        #lang-toggle .lang-target {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            display: flex; align-items: center; justify-content: center;
+            transform: rotateY(180deg);
+        }
+        #lang-toggle:hover .lang-inner { transform: rotateY(180deg); }
+
+        .import-wrapper { position: relative; }
+        .import-btn {
+            display: flex; align-items: center; gap: 6px;
+            padding: 8px 18px; border-radius: 20px;
+            background: var(--on-surface); color: white;
+            border: none; font-size: 0.82rem; font-weight: 600;
+            cursor: pointer; transition: all 0.2s var(--transition);
+        }
+        .import-btn:hover { opacity: 0.85; }
+        .import-btn svg { width: 16px; height: 16px; }
+
+        .import-menu {
+            display: none; position: absolute; right: 0; top: calc(100% + 6px);
+            background: white; border: 1px solid var(--outline-variant); border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.10); min-width: 200px; z-index: 100;
+            overflow: hidden;
+        }
+        .import-menu.open { display: block; }
+        .import-menu-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 12px 16px; cursor: pointer; transition: background 0.15s;
+            font-size: 0.85rem; font-weight: 500; color: var(--on-surface);
+        }
+        .import-menu-item + .import-menu-item { border-top: 1px solid var(--outline-variant); }
+        .import-menu-item:hover { background: rgba(0,0,0,0.03); }
+        .import-menu-item svg { width: 18px; height: 18px; color: var(--outline); flex-shrink: 0; }
+
+        .book-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 32px 24px;
+        }
+
+        .book-card {
+            text-decoration: none; color: inherit;
+            display: flex; flex-direction: column;
+            transition: transform 0.25s var(--transition);
+        }
+        .book-card:hover { transform: translateY(-4px); }
+
+        .book-cover-wrap {
+            position: relative; aspect-ratio: 2/3;
+            border-radius: 6px; overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08), 0 8px 24px rgba(0,0,0,0.06);
+            transition: box-shadow 0.3s var(--transition);
+            background: linear-gradient(135deg, #e8e0f0 0%, #d0c4e0 100%);
+            margin-top: auto; /* Pushes the cover down so its bottom rests exactly on the info block */
+        }
+        .book-card:hover .book-cover-wrap {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.10), 0 16px 40px rgba(0,0,0,0.10);
+        }
+        .book-cover-wrap img {
+            width: 100%; height: 100%; object-fit: cover;
+            display: block;
+        }
+
+        /* Spine edge effect (EPUB only) */
+        .book-cover-wrap::before {
+            content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+            background: linear-gradient(to right, rgba(0,0,0,0.15), rgba(0,0,0,0.02));
+            z-index: 1;
+        }
+        .book-card[data-format="pdf"] .book-cover-wrap::before { display: none; }
+
+        /* Fallback cover (no image) */
+        .cover-fallback {
+            width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            padding: 16px; text-align: center;
+            background: linear-gradient(145deg, #e8e0f0 0%, #c8b8e0 100%);
+        }
+        .cover-fallback-title {
+            font-size: 0.85rem; font-weight: 700; line-height: 1.3;
+            color: rgba(0,0,0,0.65); word-break: break-word;
+        }
+        .cover-fallback-author {
+            font-size: 0.7rem; color: rgba(0,0,0,0.4); margin-top: 8px;
+        }
+
+        /* ── PDF 封面基础样式 ── */
+        .book-card[data-format="pdf"] .book-cover-wrap {
+            background: #ffffff;
+            border: 1px solid rgba(0,0,0,0.05);
+        }
+
+        /* ── 竖版 PDF 封面：保留固有比例，取消强制 3:2，避免裁切 ── */
+        .book-card[data-format="pdf"]:not(.landscape) .book-cover-wrap {
+            aspect-ratio: unset;
+        }
+        .book-card[data-format="pdf"]:not(.landscape) .book-cover-wrap img {
+            width: 100%;
+            height: auto;
+            object-fit: contain;
+            display: block;
+        }
+
+        /* ── 横版卡片（横版封面）占两列宽，采用 padding 计算确保统一高度 ── */
+        .book-card.landscape {
+            grid-column: span 2;
+        }
+        .book-card.landscape .book-cover-wrap {
+            aspect-ratio: unset;
+            height: 0;
+            padding-bottom: calc(75% - 18px); /* height matching 1.5x width of standard single column */
+        }
+        .book-card.landscape .book-cover-wrap > * {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+        }
+
+        .book-info { padding: 10px 2px 0; display: flex; flex-direction: column; }
+        .book-title {
+            font-size: 0.85rem; font-weight: 600; line-height: 1.35;
+            display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+            overflow: hidden; margin-bottom: 3px;
+            min-height: 2.7em; /* Forces consistent height across all card info blocks */
+        }
+        .book-meta {
+            display: flex; align-items: center; justify-content: space-between; gap: 6px;
+            margin-top: auto;
+        }
+        .book-author {
+            font-size: 0.75rem; color: var(--outline); line-height: 1.3;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            min-width: 0;
+        }
+        .format-badge {
+            padding: 1px 6px; border-radius: 3px;
+            font-size: 0.6rem; font-weight: 700; letter-spacing: 0.3px;
+            text-transform: uppercase; line-height: 1.5; flex-shrink: 0;
+        }
+        .format-badge.pdf { background: rgba(220, 38, 38, 0.10); color: #DC2626; }
+        .format-badge.epub { background: rgba(103, 80, 164, 0.08); color: var(--primary); }
+
+        /* Library toolbar */
+        .library-toolbar {
+            display: flex; justify-content: flex-end; align-items: center;
+            margin-bottom: 24px; flex-wrap: wrap;
+        }
+        .control-island {
+            display: inline-flex; align-items: center; gap: 4px;
+            background: var(--surface-container);
+            padding: 4px; border-radius: 20px;
+        }
+        .island-divider {
+            width: 1px; height: 16px;
+            background: var(--outline-variant);
+            margin: 0 4px; opacity: 0.8;
+            flex-shrink: 0;
+        }
+        .filter-chips {
+            display: inline-flex; gap: 0;
+            transition: gap 0.4s cubic-bezier(0.2, 0, 0, 1);
+            overflow: hidden; 
+        }
+        .filter-chips:hover, .filter-chips:focus-within {
+            gap: 4px;
+        }
+        .filter-chip {
+            padding: 6px 0; border: none; border-radius: 16px;
+            background: transparent; color: var(--outline); font-size: 0.82rem; font-weight: 600;
+            cursor: pointer; transition: all 0.4s cubic-bezier(0.2, 0, 0, 1); user-select: none;
+            max-width: 0;
+            opacity: 0;
+            white-space: nowrap;
+        }
+        .filter-chip.active {
+            order: 99;
+            padding: 6px 16px;
+            max-width: 120px;
+            opacity: 1;
+            background: white; color: var(--on-surface);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+        }
+        .filter-chips:hover .filter-chip, .filter-chips:focus-within .filter-chip {
+            padding: 6px 16px;
+            max-width: 120px;
+            opacity: 1;
+        }
+        .filter-chip:hover:not(.active) { color: var(--on-surface); background: rgba(0,0,0,0.04); }
+        .sort-wrapper { position: relative; }
+        .sort-btn {
+            display: flex; align-items: center; gap: 6px;
+            padding: 6px 16px; border-radius: 16px; border: none;
+            background: transparent; color: var(--on-surface); font-size: 0.82rem; font-weight: 600;
+            cursor: pointer; transition: all 0.2s cubic-bezier(0.2, 0, 0, 1); user-select: none;
+        }
+        .sort-btn:hover { background: rgba(0,0,0,0.04); }
+        .sort-btn svg { width: 14px; height: 14px; opacity: 0.8; }
+        .sort-btn .sort-arrow { font-size: 0.7rem; opacity: 0.8; }
+        .sort-menu {
+            display: none; position: absolute; right: 0; top: calc(100% + 8px);
+            background: white; border: none; border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04); min-width: 160px; z-index: 100;
+            overflow: hidden; padding: 8px 0;
+        }
+        .sort-menu.open { display: block; }
+        .sort-menu-item {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 16px; cursor: pointer; transition: background 0.12s;
+            font-size: 0.82rem; font-weight: 500; color: var(--on-surface);
+        }
+        .sort-menu-item:hover { background: rgba(0,0,0,0.04); }
+        .sort-menu-item.active { color: var(--primary); font-weight: 600; }
+        .sort-menu-item .sort-dir { font-size: 0.75rem; opacity: 0.6; }
+        .sort-menu-divider { height: 1px; background: var(--outline-variant); margin: 4px 0; }
+        .sort-dir-check { font-size: 0.75rem; color: var(--primary); font-weight: 600; }
+        .book-card.filtered-out { display: none; }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center; padding: 120px 24px;
+            border: 2px dashed var(--outline-variant); border-radius: 16px;
+            cursor: pointer; transition: all 0.3s var(--transition);
+        }
+        .empty-state:hover { border-color: var(--primary); background: rgba(103,80,164,0.03); }
+        .empty-icon { font-size: 3rem; margin-bottom: 16px; opacity: 0.4; }
+        .empty-text { font-size: 1.1rem; margin-bottom: 8px; font-weight: 500; }
+        .empty-hint { color: var(--outline); font-size: 0.85rem; }
+        .empty-hint a { color: var(--primary); text-decoration: none; }
+        .empty-hint a:hover { text-decoration: underline; }
+
+        /* Upload overlay */
+        .upload-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.4); backdrop-filter: blur(4px);
+            z-index: 9999; justify-content: center; align-items: center;
+        }
+        .upload-overlay.active { display: flex; }
+        .upload-card {
+            background: white; border-radius: 20px; padding: 40px 48px;
+            text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.2); min-width: 320px;
+        }
+        .upload-spinner {
+            width: 40px; height: 40px; border: 3px solid var(--outline-variant);
+            border-top-color: var(--primary); border-radius: 50%;
+            animation: spin 0.8s linear infinite; margin: 0 auto 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .upload-status { font-size: 0.95rem; }
+        .upload-error { color: #B3261E; margin-top: 10px; font-size: 0.85rem; }
+
+        /* Success checkmark */
+        .success-icon {
+            width: 40px; height: 40px; margin: 0 auto 16px;
+            color: #10B981; display: none;
+        }
+
+        /* Apple Books Modal */
+        .modal-overlay {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0,0,0,0.4); backdrop-filter: blur(4px);
+            z-index: 9998; justify-content: center; align-items: center;
+        }
+        .modal-overlay.active { display: flex; }
+        .modal {
+            background: white; border-radius: 20px; padding: 28px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+            width: 90%; max-width: 680px; max-height: 85vh; display: flex; flex-direction: column;
+        }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+        .modal h2 { margin: 0; font-size: 1.15rem; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+        .modal h2 svg { width: 20px; height: 20px; }
+        .modal .subtitle { color: var(--outline); font-size: 0.82rem; margin-bottom: 16px; }
+        .select-all-label { font-size: 0.82rem; color: var(--primary); cursor: pointer; user-select: none; display: flex; align-items: center; gap: 5px; }
+        .modal-list { overflow-y: auto; flex: 1; margin: 0 -4px; padding: 0 4px; }
+
+        .modal-item {
+            display: flex; align-items: center; gap: 12px;
+            padding: 10px 12px; border-radius: 10px; cursor: pointer;
+            transition: background 0.15s; border: 1px solid transparent;
+        }
+        .modal-item:hover { background: rgba(0,0,0,0.025); }
+        .modal-item.imported { opacity: 0.4; cursor: default; }
+        .modal-item.importing { border-color: var(--primary); background: rgba(103,80,164,0.04); }
+
+        .modal-item input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; flex-shrink: 0; }
+        .modal-cover { width: 42px; height: 60px; border-radius: 3px; object-fit: cover; background: var(--surface-container); flex-shrink: 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .modal-item-info { flex: 1; min-width: 0; }
+        .modal-item-title { font-weight: 600; font-size: 0.88rem; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .modal-item-meta { font-size: 0.78rem; color: var(--outline); margin-top: 2px; }
+        .modal-item-badge { font-size: 0.72rem; padding: 2px 8px; border-radius: 8px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+        .modal-item-badge.imported-badge { background: #E8F5E9; color: #2E7D32; }
+        .modal-item-badge.importing-badge { background: rgba(103,80,164,0.08); color: var(--primary); }
+        .modal-item-badge.done-badge { background: #E8F5E9; color: #10B981; }
+        .modal-item-badge.fail-badge { background: #FFEBEE; color: #B3261E; }
+
+        .modal-footer { margin-top: 14px; display: flex; justify-content: space-between; align-items: center; }
+        .modal-selected { font-size: 0.82rem; color: var(--outline); }
+        .modal-actions { display: flex; gap: 8px; }
+        .modal-btn {
+            padding: 8px 20px; border-radius: 20px; border: none;
+            font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: all 0.2s;
+        }
+        .modal-btn.cancel { background: transparent; color: var(--on-surface); border: 1px solid var(--outline-variant); }
+        .modal-btn.cancel:hover { background: rgba(0,0,0,0.04); }
+        .modal-btn.confirm { background: var(--primary); color: white; }
+        .modal-btn.confirm:hover { box-shadow: 0 4px 12px rgba(103,80,164,0.3); }
+        .modal-btn.confirm:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+        .modal-loading { text-align: center; padding: 50px; color: var(--outline); font-size: 0.9rem; }
+
+        /* Drag over body */
+        body.drag-active::after {
+            content: 'Drop EPUB or PDF to import'; position: fixed; inset: 0;
+            background: rgba(103,80,164,0.08); border: 3px dashed var(--primary);
+            display: flex; justify-content: center; align-items: center;
+            font-size: 1.2rem; font-weight: 600; color: var(--primary);
+            z-index: 9000; pointer-events: none; border-radius: 0; margin: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="title-wrapper">
+                <div id="lang-toggle" onclick="toggleLang()">
+                    <span class="lang-inner">
+                        <span class="lang-current" id="lang-label-curr">中</span>
+                        <span class="lang-target" id="lang-label-next">EN</span>
+                    </span>
+                </div>
+                <h1>Library</h1>
+            </div>
+            <div class="header-actions">
+                <div class="import-wrapper">
+                    <button class="import-btn" onclick="toggleImportMenu()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    <span data-t="btn-import">Import</span>
+                </button>
+                <div class="import-menu" id="import-menu">
+                    <div class="import-menu-item" onclick="document.getElementById('file-input').click(); closeImportMenu();">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                        <span data-t="menu-upload">Upload File</span>
+                    </div>
+                    <div class="import-menu-item" onclick="closeImportMenu(); openAppleBooks();">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+                        <span data-t="menu-apple-books">Apple Books</span>
+                    </div>
+                </div>
+            </div>
+            </div>
+            <input type="file" id="file-input" accept=".epub,.pdf" style="display:none" onchange="uploadFile(this.files[0])">
+        </header>
+
+        {% if books %}
+        <div class="library-toolbar">
+            <div class="control-island">
+                <div class="filter-chips">
+                    <button class="filter-chip active" data-filter="all" data-t="filter-all" onclick="setFilter('all')">全部</button>
+                    <button class="filter-chip" data-filter="epub" onclick="setFilter('epub')">EPUB</button>
+                    <button class="filter-chip" data-filter="pdf" onclick="setFilter('pdf')">PDF</button>
+                </div>
+                <div class="island-divider"></div>
+                <div class="sort-wrapper">
+                    <button class="sort-btn" onclick="toggleSortMenu(event)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/></svg>
+                        <span id="sort-label" data-t="sort-title">按标题</span>
+                        <span class="sort-arrow" id="sort-arrow">↑</span>
+                    </button>
+                    <div class="sort-menu" id="sort-menu">
+                        <div class="sort-menu-item active" data-sort="title" onclick="setSort('title')" data-t="sort-title">按标题</div>
+                        <div class="sort-menu-item" data-sort="author" onclick="setSort('author')" data-t="sort-author">按作者</div>
+                        <div class="sort-menu-item" data-sort="mtime" onclick="setSort('mtime')" data-t="sort-mtime">按添加时间</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if not books %}
+        <div class="empty-state" onclick="document.getElementById('file-input').click()">
+            <div class="empty-icon">📖</div>
+            <p class="empty-text" data-t="empty-title">No books yet</p>
+            <p class="empty-hint"><span data-t="empty-hint1">Drop an EPUB or PDF here, or import from </span><a href="#" onclick="event.preventDefault(); event.stopPropagation(); openAppleBooks();" data-t="ab-title-link">Apple Books</a></p>
+        </div>
+        {% endif %}
+
+        <div class="book-grid">
+            {% for book in books %}
+            <a href="{% if book.format == 'pdf' %}/read-pdf/{{ book.id }}{% else %}/read/{{ book.id }}/0{% endif %}" class="book-card" data-book-id="{{ book.id }}" data-original-title="{{ book.original_title }}" data-format="{{ book.format or 'epub' }}" data-author="{{ book.author }}" data-title="{{ book.title }}" data-mtime="{{ book.mtime }}" onclick="return handleCardClick(event)">
+                <div class="book-cover-wrap" id="cover-{{ loop.index }}">
+                    <img src="/api/book-cover/{{ book.id }}" alt=""
+                         onload="if(this.naturalWidth>this.naturalHeight){this.closest('.book-card').classList.add('landscape');this.closest('.book-card').dataset.orient='landscape';}else{this.closest('.book-card').dataset.orient='portrait';}"
+                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <div class="cover-fallback" style="display:none">
+                        <div class="cover-fallback-title">{{ book.title }}</div>
+                        <div class="cover-fallback-author">{{ book.author }}</div>
+                    </div>
+                </div>
+                <div class="book-info">
+                    <div class="book-title">{{ book.title }}</div>
+                    <div class="book-meta">
+                        <div class="book-author">{{ book.author }}</div>
+                        <span class="format-badge {{ book.format or 'epub' }}">{{ (book.format or 'epub')|upper }}</span>
+                    </div>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Context menu -->
+    <div class="ctx-menu" id="ctx-menu">
+        <div class="ctx-menu-item" onclick="ctxRename()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+            <span data-t="ctx-rename">重命名</span>
+        </div>
+        <div class="ctx-menu-item" onclick="ctxFindCover()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>
+            <span data-t="ctx-cover">换封面</span>
+        </div>
+        <div class="ctx-menu-item" onclick="ctxReprocess()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+            <span data-t="ctx-reprocess">重新处理</span>
+        </div>
+        <div class="ctx-menu-item danger" onclick="ctxDelete()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            <span data-t="ctx-delete">删除</span>
+        </div>
+    </div>
+
+    <!-- Cover search modal -->
+    <div class="cover-modal-overlay" id="cover-modal" onclick="if(event.target===this)closeCoverModal()">
+        <div class="cover-modal">
+            <h3 id="cover-modal-title" data-t="select-cover">Select Cover</h3>
+            <div class="cover-search-bar">
+                <input type="text" id="cover-search-input" data-t="cover-search-placeholder" placeholder="修改搜索关键词..." onkeydown="if(event.key==='Enter')searchCoverByQuery()">
+                <button onclick="searchCoverByQuery()" data-t="search">搜索</button>
+            </div>
+            <div id="cover-modal-content"><div class="loading" data-t="searching">Searching...</div></div>
+            <div class="cover-modal-actions">
+                <button class="cover-modal-btn cancel" onclick="closeCoverModal()" data-t="skip">Skip</button>
+                <button class="cover-modal-btn confirm" id="cover-confirm-btn" disabled onclick="confirmCover()" data-t="use-cover">Use This Cover</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rename modal -->
+    <div class="rename-overlay" id="rename-modal" onclick="if(event.target===this)closeRenameModal()">
+        <div class="rename-modal">
+            <h3 data-t="rename-title">重命名</h3>
+            <input type="text" id="rename-input" data-t="rename-placeholder" placeholder="输入新书名..." onkeydown="if(event.key==='Enter')confirmRename()">
+            <div class="rename-modal-actions">
+                <button class="cover-modal-btn cancel" onclick="closeRenameModal()" data-t="cancel">取消</button>
+                <button class="cover-modal-btn confirm" id="rename-confirm-btn" onclick="confirmRename()" data-t="confirm">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upload overlay -->
+    <div class="upload-overlay" id="upload-overlay">
+        <div class="upload-card">
+            <div class="upload-spinner" id="upload-spinner"></div>
+            <div class="success-icon" id="success-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </div>
+            <div class="upload-status" id="upload-status" data-t="importing">正在导入...</div>
+            <div class="upload-error" id="upload-error" style="display:none"></div>
+        </div>
+    </div>
+
+    <!-- Generic Confirm Modal -->
+    <div class="confirm-overlay" id="confirm-modal" onclick="if(event.target===this)closeConfirm()">
+        <div class="confirm-modal">
+            <h3 id="confirm-title" data-t="confirm-title">确认操作</h3>
+            <p id="confirm-message" data-t="confirm-message">您确定要执行此操作吗？</p>
+            <div class="confirm-modal-actions">
+                <button class="confirm-btn secondary" onclick="closeConfirm()" data-t="cancel">取消</button>
+                <button class="confirm-btn" id="confirm-action-btn" data-t="confirm">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Apple Books modal -->
+    <div class="modal-overlay" id="ab-modal" onclick="if(event.target===this)closeAppleBooks()">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+                    <span data-t="ab-title">Apple Books</span>
+                </h2>
+                <label class="select-all-label">
+                    <input type="checkbox" id="ab-select-all" onchange="toggleSelectAll(this.checked)">
+                    <span data-t="ab-select-all">Select all</span>
+                </label>
+            </div>
+            <div class="subtitle" data-t="ab-subtitle">Select books to import</div>
+            <div class="modal-list" id="ab-list">
+                <div class="modal-loading" data-t="searching">Loading...</div>
+            </div>
+            <div class="modal-footer">
+                <div class="modal-selected" id="ab-selected-count">0 selected</div>
+                <div class="modal-actions">
+                    <button class="modal-btn cancel" onclick="closeAppleBooks()" data-t="cancel">Cancel</button>
+                    <button class="modal-btn confirm" id="ab-import-btn" disabled onclick="importSelected()" data-t="btn-import">Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+    const I18N_DICT = {
+        zh: {
+            'importing': '正在导入...',
+            'import-success': '《{title}》已成功导入',
+            'import-success-searching': '《{title}》已导入，正在搜索封面...',
+            'import-failed': '导入失败',
+            'confirm-title': '确认操作',
+            'confirm-message': '您确定要执行此操作吗？',
+            'cancel': '取消',
+            'confirm': '确定',
+            'delete-title': '删除书籍',
+            'delete-msg': '确认删除《{title}》吗？此操作不可撤销。',
+            'delete-btn': '删除',
+            'reprocess-title': '重新处理',
+            'reprocess-msg': '确认重新解析《{title}》吗？这通常用于修复目录显示问题。',
+            'reprocess-btn': '重新处理',
+            'select-file': '请选择 .epub 或 .pdf 文件',
+            'ctx-rename': '重命名',
+            'ctx-cover': '换封面',
+            'ctx-reprocess': '重新处理',
+            'ctx-delete': '删除',
+            'btn-import': '导入',
+            'menu-upload': '上传文件',
+            'menu-apple-books': 'Apple 图书',
+            'rename-title': '重命名',
+            'rename-placeholder': '输入新书名...',
+            'saving': '保存中...',
+            'searching': '搜索中...',
+            'no-covers': '未找到封面，请尝试其他关键词。',
+            'select-cover': '选择封面',
+            'use-cover': '使用此封面',
+            'more-covers': '更多封面',
+            'skip': '跳过',
+            'ab-title': 'Apple 图书',
+            'ab-subtitle': '选择要导入的书籍',
+            'ab-no-books': '未找到书籍',
+            'selected': '已选择 {n} 本',
+            'done': '完成',
+            'failed': '失败',
+            'filter-all': '全部',
+            'sort-title': '按标题',
+            'sort-author': '按作者',
+            'sort-mtime': '按添加时间',
+            'sort-asc': '正序 A→Z',
+            'sort-desc': '倒序 Z→A',
+            'cover-search-placeholder': '修改搜索关键词...',
+            'search': '搜索',
+            'ab-select-all': '全选',
+            'empty-title': '暂无书籍',
+            'empty-hint1': '将 EPUB 或 PDF 拖拽至此，或从 ',
+            'ab-title-link': 'Apple 图书导入',
+            'imported': '已导入',
+            'unknown-author': '未知作者'
+        },
+        en: {
+            'importing': 'Importing...',
+            'import-success': '"{title}" imported successfully',
+            'import-success-searching': '"{title}" imported, searching for cover...',
+            'import-failed': 'Import failed',
+            'confirm-title': 'Confirm Action',
+            'confirm-message': 'Are you sure you want to proceed?',
+            'cancel': 'Cancel',
+            'confirm': 'Confirm',
+            'delete-title': 'Delete Book',
+            'delete-msg': 'Are you sure you want to delete "{title}"? This cannot be undone.',
+            'delete-btn': 'Delete',
+            'reprocess-title': 'Reprocess',
+            'reprocess-msg': 'Reprocess "{title}"? This is used to fix table of contents issues.',
+            'reprocess-btn': 'Reprocess',
+            'select-file': 'Please select an .epub or .pdf file',
+            'ctx-rename': 'Rename',
+            'ctx-cover': 'Change Cover',
+            'ctx-reprocess': 'Reprocess',
+            'ctx-delete': 'Delete',
+            'btn-import': 'Import',
+            'menu-upload': 'Upload File',
+            'menu-apple-books': 'Apple Books',
+            'rename-title': 'Rename',
+            'rename-placeholder': 'New title...',
+            'saving': 'Saving...',
+            'searching': 'Searching...',
+            'no-covers': 'No covers found. Try different keywords.',
+            'select-cover': 'Select Cover',
+            'use-cover': 'Use This Cover',
+            'more-covers': 'More covers',
+            'skip': 'Skip',
+            'ab-title': 'Apple Books',
+            'ab-subtitle': 'Select books to import',
+            'ab-no-books': 'No books found',
+            'selected': '{n} selected',
+            'done': 'Done',
+            'failed': 'Failed',
+            'filter-all': 'All',
+            'sort-title': 'By Title',
+            'sort-author': 'By Author',
+            'sort-mtime': 'By Date Added',
+            'sort-asc': 'Ascending A→Z',
+            'sort-desc': 'Descending Z→A',
+            'cover-search-placeholder': 'Modify search query...',
+            'search': 'Search',
+            'ab-select-all': 'Select all',
+            'empty-title': 'No books yet',
+            'empty-hint1': 'Drop an EPUB or PDF here, or import from ',
+            'ab-title-link': 'Apple Books',
+            'imported': 'Imported',
+            'unknown-author': 'Unknown'
+        }
+    };
+
+    function getLang() {
+        return localStorage.getItem('reader_lang') || (navigator.language.startsWith('zh') ? 'zh' : 'en');
+    }
+
+    function t(key, data = {}) {
+        const lang = getLang();
+        let text = I18N_DICT[lang][key] || key;
+        for (const [k, v] of Object.entries(data)) {
+            text = text.replace(`{${k}}`, v);
+        }
+        return text;
+    }
+
+    function toggleLang() {
+        const newLang = getLang() === 'zh' ? 'en' : 'zh';
+        localStorage.setItem('reader_lang', newLang);
+        location.reload();
+    }
+
+    function applyStaticLang() {
+        const lang = getLang();
+        // Update 3D toggle labels
+        const curr = document.getElementById('lang-label-curr');
+        const next = document.getElementById('lang-label-next');
+        if (curr && next) {
+            curr.textContent = lang === 'zh' ? '中' : 'EN';
+            next.textContent = lang === 'zh' ? 'EN' : '中';
+        }
+
+        // Update static elements with data-t attribute
+        document.querySelectorAll('[data-t]').forEach(el => {
+            const key = el.getAttribute('data-t');
+            if (el.tagName === 'INPUT' && el.placeholder) {
+                el.placeholder = t(key);
+            } else {
+                el.textContent = t(key);
+            }
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', applyStaticLang);
+
+    let appleBooks = [], importing = false;
+
+    // --- Context menu ---
+    let _ctxBookId = null, _ctxTitle = null;
+    const ctxMenu = document.getElementById('ctx-menu');
+
+    document.addEventListener('contextmenu', e => {
+        const card = e.target.closest('.book-card');
+        if (!card) return;
+        e.preventDefault();
+        _ctxBookId = card.dataset.bookId;
+        _ctxTitle = card.querySelector('.book-title').textContent;
+        const x = Math.min(e.clientX, window.innerWidth - 200);
+        const y = Math.min(e.clientY, window.innerHeight - 180);
+        ctxMenu.style.left = x + 'px';
+        ctxMenu.style.top = y + 'px';
+        ctxMenu.classList.add('active');
+    });
+
+    document.addEventListener('click', e => {
+        if (!ctxMenu.contains(e.target)) ctxMenu.classList.remove('active');
+    });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') {
+            ctxMenu.classList.remove('active');
+            closeRenameModal();
+            closeConfirm();
+            closeCoverModal();
+            closeAppleBooks();
+        }
+    });
+
+    function ctxRename() {
+        ctxMenu.classList.remove('active');
+        const input = document.getElementById('rename-input');
+        input.value = _ctxTitle;
+        input.placeholder = t('rename-placeholder');
+        document.getElementById('rename-modal').classList.add('active');
+        setTimeout(() => { input.focus(); input.select(); }, 50);
+    }
+
+    function closeRenameModal() {
+        document.getElementById('rename-modal').classList.remove('active');
+    }
+
+    function confirmRename() {
+        const newTitle = document.getElementById('rename-input').value.trim();
+        const btn = document.getElementById('rename-confirm-btn');
+        if (newTitle === _ctxTitle) { closeRenameModal(); return; }
+        btn.textContent = t('saving'); btn.disabled = true;
+        fetch(`/api/rename-book/${encodeURIComponent(_ctxBookId)}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: newTitle })
+        }).then(r => { if (!r.ok) throw new Error('Failed'); window.location.reload(); })
+          .catch(e => {
+            alert(t('import-failed') + '：' + e.message);
+            btn.textContent = t('confirm'); btn.disabled = false;
+          });
+    }
+
+    function ctxFindCover() {
+        ctxMenu.classList.remove('active');
+        openCoverSearch(_ctxBookId);
+    }
+
+    // --- Generic Confirm ---
+    let _confirmCallback = null;
+    function showConfirm(titleKey, messageKey, btnTextKey, btnClass, data = {}, callback) {
+        document.getElementById('confirm-title').textContent = t(titleKey);
+        document.getElementById('confirm-message').textContent = t(messageKey, data);
+        const btn = document.getElementById('confirm-action-btn');
+        btn.textContent = t(btnTextKey);
+        btn.className = 'confirm-btn ' + btnClass;
+        _confirmCallback = callback;
+        document.getElementById('confirm-modal').classList.add('active');
+    }
+    function closeConfirm() { document.getElementById('confirm-modal').classList.remove('active'); }
+    document.getElementById('confirm-action-btn').onclick = () => {
+        if (_confirmCallback) _confirmCallback();
+        closeConfirm();
+    };
+
+    async function ctxReprocess() {
+        ctxMenu.classList.remove('active');
+        showConfirm('reprocess-title', 'reprocess-msg', 'reprocess-btn', 'primary', {title: _ctxTitle}, async () => {
+            try {
+                const r = await fetch(`/api/reprocess/${encodeURIComponent(_ctxBookId)}`, { method: 'POST' });
+                if (!r.ok) throw new Error('Failed');
+                window.location.reload();
+            } catch (e) { alert(t('import-failed') + '：' + e.message); }
+        });
+    }
+
+    async function ctxDelete() {
+        ctxMenu.classList.remove('active');
+        showConfirm('delete-title', 'delete-msg', 'delete-btn', 'danger', {title: _ctxTitle}, async () => {
+            try {
+                const r = await fetch('/api/delete-books', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ book_ids: [_ctxBookId] })
+                });
+                if (!r.ok) throw new Error('Failed');
+                window.location.reload();
+            } catch (e) { alert(t('import-failed') + '：' + e.message); }
+        });
+    }
+
+    function handleCardClick(e) {
+        return true; // normal navigation
+    }
+
+    let _coverBookId = null, _selectedCoverUrl = null;
+    let _allCovers = [], _coverPage = 0;
+    const _coversPerPage = 6;
+
+    async function openCoverSearch(bookId, customQuery) {
+        _coverBookId = bookId;
+        _selectedCoverUrl = null;
+        _allCovers = [];
+        _coverPage = 0;
+        const modal = document.getElementById('cover-modal');
+        const content = document.getElementById('cover-modal-content');
+        const confirmBtn = document.getElementById('cover-confirm-btn');
+        const searchInput = document.getElementById('cover-search-input');
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = t('use-cover');
+        content.innerHTML = `<div class="loading">${t('searching')}</div>`;
+        modal.classList.add('active');
+
+        try {
+            const body = customQuery ? { query: customQuery } : {};
+            const r = await fetch(`/api/search-cover/${encodeURIComponent(_coverBookId)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            if (!r.ok) throw new Error('Search failed');
+            const data = await r.json();
+            if (!customQuery) searchInput.value = data.query;
+            if (!data.covers || data.covers.length === 0) {
+                content.innerHTML = `<div class="loading">${t('no-covers')}</div>`;
+                return;
+            }
+            document.getElementById('cover-modal-title').textContent = t('select-cover');
+            _allCovers = data.covers;
+            _coverPage = 0;
+            _renderCoverPage();
+        } catch (e) {
+            content.innerHTML = `<div class="loading">Error: ${e.message}</div>`;
+        }
+    }
+
+    function searchCoverByQuery() {
+        const q = document.getElementById('cover-search-input').value.trim();
+        if (q && _coverBookId) openCoverSearch(_coverBookId, q);
+    }
+
+    function _renderCoverPage() {
+        const content = document.getElementById('cover-modal-content');
+        const start = _coverPage * _coversPerPage;
+        const slice = _allCovers.slice(start, start + _coversPerPage);
+        const hasMore = start + _coversPerPage < _allCovers.length;
+        content.innerHTML = '<div class="cover-grid">' + slice.map(c => {
+            const displayUrl = c.image_url.includes('doubanio.com')
+                ? `/api/proxy-image?url=${encodeURIComponent(c.image_url)}`
+                : c.image_url;
+            return `<div class="cover-option" onclick="selectCover(this, '${c.image_url.replace(/'/g, "\\'")}')">
+                <img src="${displayUrl}" alt="${c.title}" onerror="this.parentElement.style.display='none'">
+            </div>`;
+        }).join('') + '</div>'
+        + (hasMore ? `<div style="text-align:center;margin-top:8px"><button class="cover-modal-btn cancel" onclick="_coverPage++;_renderCoverPage()" style="font-size:0.82rem">${t('more-covers')}</button></div>` : '');
+        _selectedCoverUrl = null;
+        document.getElementById('cover-confirm-btn').disabled = true;
+    }
+
+    function selectCover(el, url) {
+        document.querySelectorAll('.cover-option').forEach(c => c.classList.remove('selected'));
+        el.classList.add('selected');
+        _selectedCoverUrl = url;
+        document.getElementById('cover-confirm-btn').disabled = false;
+    }
+
+    async function confirmCover() {
+        if (!_coverBookId || !_selectedCoverUrl) return;
+        const btn = document.getElementById('cover-confirm-btn');
+        btn.textContent = t('saving'); btn.disabled = true;
+        try {
+            const r = await fetch(`/api/set-cover/${encodeURIComponent(_coverBookId)}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image_url: _selectedCoverUrl })
+            });
+            if (!r.ok) throw new Error('Failed to save cover');
+            window.location.reload();
+        } catch (e) {
+            alert('Error: ' + e.message);
+            btn.textContent = t('use-cover'); btn.disabled = false;
+        }
+    }
+
+    function closeCoverModal() {
+        document.getElementById('cover-modal').classList.remove('active');
+        _coverBookId = null; _selectedCoverUrl = null;
+        window.location.reload();
+    }
+
+    // --- Import menu ---
+    function toggleImportMenu() { document.getElementById('import-menu').classList.toggle('open'); }
+    function closeImportMenu() { document.getElementById('import-menu').classList.remove('open'); }
+    document.addEventListener('click', e => { if (!document.querySelector('.import-wrapper')?.contains(e.target)) closeImportMenu(); });
+
+    // --- Drag & drop ---
+    let dragCount = 0;
+    document.body.addEventListener('dragenter', e => { e.preventDefault(); if (++dragCount === 1) document.body.classList.add('drag-active'); });
+    document.body.addEventListener('dragleave', e => { e.preventDefault(); if (--dragCount === 0) document.body.classList.remove('drag-active'); });
+    document.body.addEventListener('dragover', e => e.preventDefault());
+    document.body.addEventListener('drop', e => { e.preventDefault(); dragCount = 0; document.body.classList.remove('drag-active'); const f = e.dataTransfer.files[0]; if (f && (f.name.toLowerCase().endsWith('.epub') || f.name.toLowerCase().endsWith('.pdf'))) uploadFile(f); });
+
+    async function uploadFile(file) {
+        if (!file) return;
+        const name = file.name.toLowerCase();
+        if (!name.endsWith('.epub') && !name.endsWith('.pdf')) { alert(t('select-file')); return; }
+        const o = document.getElementById('upload-overlay'), 
+              s = document.getElementById('upload-status'), 
+              err = document.getElementById('upload-error'), 
+              sp = document.getElementById('upload-spinner'),
+              si = document.getElementById('success-icon');
+        
+        o.classList.add('active'); 
+        s.textContent = t('importing') + ` "${file.name}"...`; 
+        err.style.display = 'none'; 
+        sp.style.display = 'block';
+        if (si) si.style.display = 'none';
+
+        const form = new FormData(); form.append('file', file);
+        try {
+            const r = await fetch('/api/upload', { method: 'POST', body: form });
+            if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.detail || t('import-failed')); }
+            const d = await r.json(); 
+            
+            // Success State
+            sp.style.display = 'none';
+            if (si) si.style.display = 'block';
+            s.textContent = t('import-success', {title: d.title}); 
+            
+            if (!d.has_cover) {
+                s.textContent = t('import-success-searching', {title: d.title});
+                setTimeout(() => { o.classList.remove('active'); openCoverSearch(d.book_id); }, 1500);
+            } else {
+                setTimeout(() => window.location.reload(), 1500);
+            }
+        } catch (e) { 
+            sp.style.display = 'none'; 
+            if (si) si.style.display = 'none';
+            s.textContent = t('import-failed'); 
+            err.textContent = e.message; 
+            err.style.display = 'block'; 
+            setTimeout(() => o.classList.remove('active'), 3000); 
+        }
+    }
+
+    // --- Apple Books ---
+    async function openAppleBooks() {
+        document.getElementById('ab-modal').classList.add('active');
+        const list = document.getElementById('ab-list');
+        list.innerHTML = `<div class="modal-loading">${t('searching')}</div>`;
+        try {
+            const r = await fetch('/api/apple-books'); const d = await r.json(); appleBooks = d.books || []; renderAppleBooks();
+        } catch (e) { list.innerHTML = `<div class="modal-loading" style="color:#B3261E">${t('failed')}: ${e.message}</div>`; }
+    }
+    function closeAppleBooks() { if (!importing) document.getElementById('ab-modal').classList.remove('active'); }
+    function renderAppleBooks() {
+        const list = document.getElementById('ab-list');
+        if (!appleBooks.length) { list.innerHTML = `<div class="modal-loading">${t('ab-no-books')}</div>`; return; }
+        list.innerHTML = appleBooks.map((b, i) => `
+            <div class="modal-item ${b.imported?'imported':''}" id="ab-item-${i}" onclick="${b.imported?'':`toggleBook(${i})`}">
+                <input type="checkbox" ${b.imported?'disabled checked':''} ${b._selected?'checked':''} id="ab-cb-${i}" onclick="event.stopPropagation();toggleBook(${i})" ${b.imported?'disabled':''}>
+                <img class="modal-cover" src="/api/apple-books/cover/${b.asset_id}" alt="" onerror="this.style.background='linear-gradient(135deg,#e8e0f0,#d0c4e0)'">
+                <div class="modal-item-info">
+                    <div class="modal-item-title" title="${b.title}">${b.title}</div>
+                    <div class="modal-item-meta">${b.author||t('unknown-author')} &middot; ${b.size_mb} MB</div>
+                </div>
+                ${b.imported?`<span class="modal-item-badge imported-badge">${t('imported')}</span>`:''}
+                <span class="modal-item-badge" id="ab-badge-${i}" style="display:none"></span>
+            </div>
+        `).join(''); updateSelectedCount();
+    }
+    function toggleBook(i) { if (appleBooks[i].imported||importing) return; appleBooks[i]._selected=!appleBooks[i]._selected; const c=document.getElementById(`ab-cb-${i}`); if(c)c.checked=appleBooks[i]._selected; updateSelectedCount(); }
+    function toggleSelectAll(v) { appleBooks.forEach((b,i)=>{if(!b.imported){b._selected=v;const c=document.getElementById(`ab-cb-${i}`);if(c)c.checked=v;}}); updateSelectedCount(); }
+    function updateSelectedCount() {
+        const n=appleBooks.filter(b=>b._selected&&!b.imported).length;
+        document.getElementById('ab-selected-count').textContent = t('selected', {n: n});
+        document.getElementById('ab-import-btn').disabled=n===0;
+        const imp=appleBooks.filter(b=>!b.imported); document.getElementById('ab-select-all').checked=imp.length>0&&imp.every(b=>b._selected);
+    }
+    async function importSelected() {
+        const sel=appleBooks.map((b,i)=>({...b,_idx:i})).filter(b=>b._selected&&!b.imported); if(!sel.length)return;
+        importing=true; document.getElementById('ab-import-btn').disabled=true; document.getElementById('ab-import-btn').textContent = t('importing');
+        for(const book of sel){
+            const i=book._idx, item=document.getElementById(`ab-item-${i}`), badge=document.getElementById(`ab-badge-${i}`);
+            item.classList.add('importing'); badge.className='modal-item-badge importing-badge'; badge.textContent=t('importing'); badge.style.display='';
+            try{
+                const r=await fetch('/api/import-local',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:book.path})});
+                if(!r.ok){const d=await r.json().catch(()=>({}));throw new Error(d.detail||'Failed');}
+                badge.className='modal-item-badge done-badge'; badge.textContent=t('done'); appleBooks[i].imported=true;
+            }catch(e){badge.className='modal-item-badge fail-badge';badge.textContent=t('failed');}
+            item.classList.remove('importing');
+        }
+        importing=false; document.getElementById('ab-import-btn').textContent = t('btn-import'); updateSelectedCount();
+        setTimeout(()=>window.location.reload(), 1500);
+    }
+
+    // --- Filter & Sort ---
+    let _currentFilter = 'all';
+    let _currentSort = 'title';
+    let _sortAsc = true;
+
+    function setFilter(val) {
+        _currentFilter = val;
+        document.querySelectorAll('.filter-chip').forEach(c => {
+            c.classList.toggle('active', c.dataset.filter === val);
+        });
+        localStorage.setItem('lib_filter', val);
+        applyFilterAndSort();
+    }
+
+    function setSort(key) {
+        if (_currentSort === key) {
+            _sortAsc = !_sortAsc;
+        } else {
+            _currentSort = key;
+            _sortAsc = (key === 'title' || key === 'author') ? true : false;
+            localStorage.setItem('lib_sort', key);
+        }
+        localStorage.setItem('lib_sort_asc', _sortAsc ? '1' : '0');
+
+        // Update menu active state
+        document.querySelectorAll('.sort-menu-item[data-sort]').forEach(item => {
+            const isActive = item.dataset.sort === _currentSort;
+            item.classList.toggle('active', isActive);
+            let arrowSpan = item.querySelector('.sort-dir-arr');
+            if (isActive) {
+                if (!arrowSpan) {
+                    item.insertAdjacentHTML('beforeend', `<span class="sort-dir-arr" style="margin-left:auto; font-size:0.75rem;">${_sortAsc ? '↑' : '↓'}</span>`);
+                } else {
+                    arrowSpan.textContent = _sortAsc ? '↑' : '↓';
+                }
+            } else if (arrowSpan) {
+                arrowSpan.remove();
+            }
+        });
+        
+        // Update button label and arrow
+        document.getElementById('sort-label').textContent = t('sort-' + _currentSort);
+        document.getElementById('sort-arrow').textContent = _sortAsc ? '↑' : '↓';
+        closeSortMenu();
+        applyFilterAndSort();
+    }
+
+    function applyFilterAndSort() {
+        const grid = document.querySelector('.book-grid');
+        if (!grid) return;
+        const cards = Array.from(grid.querySelectorAll('.book-card'));
+
+        // Filter
+        cards.forEach(card => {
+            const fmt = card.dataset.format || 'epub';
+            if (_currentFilter === 'all' || fmt === _currentFilter) {
+                card.classList.remove('filtered-out');
+            } else {
+                card.classList.add('filtered-out');
+            }
+        });
+
+        // Sort
+        const visible = cards.slice();
+        visible.sort((a, b) => {
+            let va, vb;
+            switch (_currentSort) {
+                case 'title':
+                    va = (a.dataset.title || '').toLowerCase();
+                    vb = (b.dataset.title || '').toLowerCase();
+                    break;
+                case 'author':
+                    va = (a.dataset.author || '').toLowerCase();
+                    vb = (b.dataset.author || '').toLowerCase();
+                    break;
+                case 'mtime':
+                    va = parseFloat(a.dataset.mtime) || 0;
+                    vb = parseFloat(b.dataset.mtime) || 0;
+                    break;
+                default:
+                    va = ''; vb = '';
+            }
+            let cmp;
+            if (typeof va === 'number') {
+                cmp = va - vb;
+            } else {
+                cmp = va.localeCompare(vb);
+            }
+            if (cmp !== 0) return _sortAsc ? cmp : -cmp;
+            return 0;
+        });
+
+        // Re-order DOM
+        visible.forEach(card => grid.appendChild(card));
+    }
+
+    function toggleSortMenu(e) {
+        e.stopPropagation();
+        document.getElementById('sort-menu').classList.toggle('open');
+    }
+    function closeSortMenu() {
+        document.getElementById('sort-menu').classList.remove('open');
+    }
+    document.addEventListener('click', e => {
+        if (!e.target.closest('.sort-wrapper')) closeSortMenu();
+    });
+
+    // Restore preferences on load
+    document.addEventListener('DOMContentLoaded', () => {
+        const savedFilter = localStorage.getItem('lib_filter') || 'all';
+        const savedSort = localStorage.getItem('lib_sort') || 'title';
+        const savedAsc = localStorage.getItem('lib_sort_asc');
+
+        _currentFilter = savedFilter;
+        _currentSort = savedSort;
+        _sortAsc = savedAsc !== null ? savedAsc === '1' : (savedSort === 'mtime' ? false : true);
+
+        // Update filter chips
+        document.querySelectorAll('.filter-chip').forEach(c => {
+            c.classList.toggle('active', c.dataset.filter === _currentFilter);
+        });
+        // Update sort menu and button
+        document.querySelectorAll('.sort-menu-item[data-sort]').forEach(item => {
+            const isActive = item.dataset.sort === _currentSort;
+            item.classList.toggle('active', isActive);
+            if (isActive) {
+                item.insertAdjacentHTML('beforeend', `<span class="sort-dir-arr" style="margin-left:auto; font-size:0.75rem;">${_sortAsc ? '↑' : '↓'}</span>`);
+            }
+        });
+        const sortLabel = document.getElementById('sort-label');
+        const sortArrow = document.getElementById('sort-arrow');
+        if (sortLabel) sortLabel.textContent = t('sort-' + _currentSort);
+        if (sortArrow) sortArrow.textContent = _sortAsc ? '↑' : '↓';
+
+        applyFilterAndSort();
+
+        // Re-sort after cover images load (landscape detection is async)
+        let _resortTimer = null;
+        document.querySelectorAll('.book-card img').forEach(img => {
+            if (img.complete) return;
+            img.addEventListener('load', () => {
+                clearTimeout(_resortTimer);
+                _resortTimer = setTimeout(() => { applyFilterAndSort(); }, 100);
+            });
+        });
+    });
+</script>
+</body>
+</html>

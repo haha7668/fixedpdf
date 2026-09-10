@@ -1,0 +1,67 @@
+# Book data (extracted images, pkl, etc.)
+*_data/
+
+# TTS cache
+.tts_cache/
+
+# Library metadata cache
+.library_index.json
+
+# EPUB source files
+*.epub
+!assets/Meditations by Emperor of Rome Marcus Aurelius.epub
+
+# Dictionary data
+dict/
+
+# Test files (root only)
+/test_*.py
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Coverage
+.coverage
+
+# OS
+.DS_Store
+
+# AI config (contains API keys)
+ai_config.json
+
+# --- bkit / PDCA metadata ---
+docs/.pdca-snapshots/
+docs/.pdca-status.json
+docs/.bkit-memory.json
+
+# 敏感环境配置文件（截获 .env）
+.env
+.env.*
+!.env.example
+
+# 插件及工具生成的本地配置（截获 settings.local.json）
+settings.local.json
+.claude/
+.gemini/
+
+# 日志文件（截获 server.log）
+*.log
+
+# PDCA 状态文件（补全根目录下的路径，截获 .pdca-status.json）
+.pdca-status.json
+
+# Local book storage and cache
+books/
+# Skill-generated analysis artifacts
+.understand-anything/
+.codegraph/
+
+# Toolchain caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Coverage
+htmlcov/

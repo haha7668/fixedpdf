@@ -1,0 +1,55 @@
+[project]
+name = "reader3"
+version = "0.1.0"
+description = "Simple EPUB reader web app"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "beautifulsoup4>=4.14.2",
+    "dashscope>=1.25.12",
+    "ebooklib>=0.20",
+    "edge-tts>=7.2.7",
+    "fastapi>=0.121.2",
+    "google-genai>=1.0.0",
+    "httpx[socks]>=0.28.1",
+    "jinja2>=3.1.6",
+    "pillow>=10.0",
+    "python-dotenv>=1.2.1",
+    "python-multipart>=0.0.22",
+    "uvicorn>=0.38.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+]
+
+[tool.coverage.run]
+source = ["server", "reader3"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 75
+show_missing = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501", "E402", "E701", "SIM103", "SIM105", "SIM108", "SIM117", "B008", "B017", "B023", "B904"]
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[tool.bandit]
+skips = ["B101", "B311", "B404", "B603"]

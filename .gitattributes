@@ -1,0 +1,5 @@
+# Force GitHub Linguist to ignore HTML/CSS templates in language statistics
+# This highlights the underlying Python/JavaScript logic of the repository
+*.html linguist-detectable=false
+*.css linguist-detectable=false
+*.json linguist-detectable=false
