@@ -65,3 +65,11 @@ books/
 
 # Coverage
 htmlcov/
+
+# PyInstaller output
+build/
+dist/
+
+# Local PDF verification artifacts and browser sessions (may contain book text)
+output/
+.playwright-cli/

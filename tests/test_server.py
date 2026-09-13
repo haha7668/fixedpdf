@@ -2758,3 +2758,81 @@ class TestDictDownloadEmpty:
                     mock_opener.return_value.open.return_value = mock_resp
                     response = client.post('/api/dict/download', json={"id": "cn_dict"})
                     assert response.status_code == 200
+
+
+class TestPdfTranslationLayout:
+    def test_classifies_dense_rows_as_tables(self):
+        text = "VIH\nMinimum High Level\n2.0V\n1.5\n1.5\n1.5\nV"
+        assert server._classify_pdf_block(text, 0, 0, 400, 28) == "table"
+
+    def test_classifies_technical_parameter_row_as_table(self):
+        text = "tPHL, tPLH\nMaximum Propagation\n10\nns\nDelay"
+        assert server._classify_pdf_block(text, 0, 0, 304, 16) == "table"
+
+    def test_merges_wrapped_table_label(self):
+        blocks = [
+            {"layout": "table_cell", "x0": 192.8, "x1": 261.9, "y0": 121.2, "y1": 128.2,
+             "source": "Maximum Propagation", "cache_key": "first"},
+            {"layout": "table_cell", "x0": 192.8, "x1": 210.4, "y0": 130.6, "y1": 137.6,
+             "source": "Delay", "cache_key": "second"},
+        ]
+        merged = server._merge_pdf_heading_parts(blocks, 3)
+        assert len(merged) == 1
+        assert merged[0]["source"] == "Maximum Propagation Delay"
+        assert merged[0]["height"] == 16.4
+
+    def test_merges_centered_stacked_table_header(self):
+        blocks = [
+            {"layout": "table_cell", "x0": 373.3, "x1": 412.4, "y0": 98.7, "y1": 105.7,
+             "source": "Guaranteed", "cache_key": "first"},
+            {"layout": "table_cell", "x0": 433.2, "x1": 450.4, "y0": 103.4, "y1": 110.3,
+             "source": "Units", "cache_key": "intervening"},
+            {"layout": "table_cell", "x0": 384.6, "x1": 401.1, "y0": 108.2, "y1": 115.1,
+             "source": "Limit", "cache_key": "second"},
+        ]
+        merged = server._merge_pdf_heading_parts(blocks, 3)
+        assert len(merged) == 2
+        assert merged[0]["source"] == "Guaranteed Limit"
+        assert server._calibrated_table_cell_translation(merged[0]["source"]) == "保证限值"
+
+    def test_classifies_prose_as_paragraph(self):
+        text = "This device provides low quiescent power and a wide power supply range."
+        assert server._classify_pdf_block(text, 0, 0, 180, 48) == "paragraph"
+
+    def test_compacts_one_table_cell_only(self):
+        assert server._normalise_segment_translation("Minimum\nHigh Level", "table_cell") == "Minimum High Level"
+
+    def test_table_span_filter_keeps_values_and_signal_names(self):
+        assert not server._should_translate_table_span("1.5")
+        assert not server._should_translate_table_span("VCC")
+        assert not server._should_translate_table_span("ns")
+        assert not server._should_translate_table_span("tPHL, tPLH")
+        assert server._should_translate_table_span("Minimum High Level")
+
+    def test_recognises_signal_sequence_before_its_table_label(self):
+        assert server._looks_like_table_signal("t TLH, t THL")
+        assert server._looks_like_table_signal("VCC")
+        assert not server._looks_like_table_signal("Maximum Output Rise")
+
+    def test_uses_reviewed_compact_table_labels(self):
+        assert server._calibrated_table_cell_translation("Minimum High Level") == "最小高电平"
+        assert server._calibrated_table_cell_translation("Maximum Output Rise and Fall Time") == "最大输出上升和下降时间"
+        assert server._calibrated_table_cell_translation("Supply Voltage (V") == "电源电压"
+        assert server._calibrated_table_cell_translation("4.5V") is None
+
+    def test_merges_heading_with_adjacent_note(self):
+        blocks = [
+            {"layout": "table_cell", "source": "Absolute Maximum Ratings", "x0": 10, "x1": 80, "y0": 20, "y1": 28},
+            {"layout": "table_cell", "source": "(Notes 1 & 2)", "x0": 80, "x1": 120, "y0": 22, "y1": 29},
+        ]
+        merged = server._merge_pdf_heading_parts(blocks, page_num=2)
+        assert len(merged) == 1
+        assert merged[0]["source"] == "Absolute Maximum Ratings (Notes 1 & 2)"
+        assert merged[0]["x1"] == 120
+
+    def test_prompt_contains_fixed_layout_instruction(self):
+        prompt = server._segment_translation_prompt({
+            "layout": "table_cell", "width": 80, "height": 12, "source": "Minimum High Level",
+        })
+        assert "one textual cell" in prompt
+        assert "one short line" in prompt

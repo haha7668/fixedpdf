@@ -3,11 +3,15 @@ import hashlib
 import json
 import os
 import pickle
+import re
 import sqlite3
+import sys
 import tempfile
 import threading
 import zlib
 from functools import lru_cache
+from pathlib import Path
+from urllib.parse import quote
 
 import edge_tts
 import httpx
@@ -22,16 +26,30 @@ from google import genai as google_genai
 from pydantic import BaseModel
 
 from reader3 import Book, process_epub, save_to_pickle
+import pdf_translation
+
+# Keep bundled resources separate from writable user data in frozen builds.
+# `dist/` is replaced on every PyInstaller build, so it must never hold books,
+# caches, or API configuration.
+RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+EXE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else RESOURCE_DIR
+if getattr(sys, "frozen", False):
+    APP_DIR = os.path.join(os.getenv("LOCALAPPDATA") or EXE_DIR, "pdf_reader")
+    os.makedirs(APP_DIR, exist_ok=True)
+else:
+    APP_DIR = RESOURCE_DIR
 
 # Load .env file automatically
-load_dotenv()
+if getattr(sys, "frozen", False):
+    load_dotenv(os.path.join(EXE_DIR, ".env"))
+load_dotenv(os.path.join(APP_DIR, ".env"))
 
 # --- AI 链路日志：记录每次 AI 请求/流式原始数据/清理后数据，用于排查 ---
 import logging
 _ai_logger = logging.getLogger('smoothie_ai')
 _ai_logger.setLevel(logging.INFO)
 if not _ai_logger.handlers:
-    _AI_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'server_ai.log')
+    _AI_LOG_PATH = os.path.join(APP_DIR, 'server_ai.log')
     _fh = logging.FileHandler(_AI_LOG_PATH, encoding='utf-8')
     _fh.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s'))
     _ai_logger.addHandler(_fh)
@@ -46,7 +64,7 @@ def _ai_log(msg: str, *args):
 
 
 # --- AI Provider System ---
-AI_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ai_config.json')
+AI_CONFIG_PATH = os.path.join(APP_DIR, 'ai_config.json')
 
 _PROVIDER_DEFS = {
     'openai':      {'name': 'OpenAI',       'base_url': 'https://api.openai.com/v1/',                           'default_model': 'gpt-4o-mini',                    'format': 'openai'},
@@ -77,7 +95,7 @@ _PROVIDER_DEFS = {
 _ai_config = {'providers': {}, 'order': []}
 
 # --- Dictionary Management ---
-_DICT_DIR = os.path.join(os.path.dirname(__file__), 'dict')
+_DICT_DIR = os.path.join(APP_DIR, 'dict')
 _DICT_FILES = {
     'ecdict':  {'filename': 'stardict.db', 'label': 'ECDICT英文词典', 'label_en': 'ECDICT English', 'size_mb': 307, 'gz_mb': 134},
     'cn_dict': {'filename': 'cn_dict.db',  'label': '中文词典',       'label_en': 'Chinese Dict',    'size_mb': 48,  'gz_mb': 25},
@@ -177,11 +195,11 @@ def _get_enabled_providers():
 def _pick_model(p: dict, images=None) -> str:
     """选择实际使用的模型：
     - 有图片：优先 vision_model（用户单独配置的视觉模型）→ model → default_model
-    - 无图片：用 default_model → model
+    - 无图片：用 model → default_model，尊重用户选择
     """
     if images:
         return p.get('vision_model') or p.get('model') or p.get('default_model', '')
-    return p.get('default_model') or p.get('model', '')
+    return p.get('model') or p.get('default_model', '')
 
 
 # Initialize provider config on module load
@@ -213,7 +231,8 @@ def _build_user_content(prompt, images=None):
     return content
 
 
-async def _call_openai_compat(base_url, api_key, model, prompt, temperature, max_tokens, extra_body=None, images=None):
+async def _call_openai_compat(base_url, api_key, model, prompt, temperature, max_tokens, extra_body=None, images=None,
+                              final_only=False):
     """Non-streaming call to OpenAI-compatible chat/completions endpoint."""
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     body = {
@@ -234,6 +253,8 @@ async def _call_openai_compat(base_url, api_key, model, prompt, temperature, max
         raise Exception(f"HTTP {resp.status_code}: {detail}")
     msg = resp.json()["choices"][0]["message"]
     content = msg.get("content") or ""
+    if final_only and not content:
+        raise ValueError('翻译服务没有返回最终译文，可能已耗尽输出预算；不会使用推理文本替代译文。')
     # 推理模型（如 deepseek-reasoner / vision 变体）可能把内容输出在 reasoning_content，
     # 而 content 为空（思考过程把 max_tokens 吃光）。此时回退到 reasoning_content，避免空白。
     if not content:
@@ -330,8 +351,10 @@ async def _ai_complete(prompt, temperature=0.7, max_tokens=4096, task=None, imag
             elif fmt == 'cli':
                 text = await _call_cli(p.get('cli_command', ''), prompt)
             else:
-                extra = {"thinking": {"type": "disabled"}} if p['id'] == 'zhipuai' else None
-                text = await _call_openai_compat(p['base_url'], p['api_key'], model, prompt, t, mt, extra_body=extra, images=images)
+                disable_thinking = p['id'] == 'zhipuai' or (p['id'] == 'deepseek' and task == 'translate')
+                extra = {"thinking": {"type": "disabled"}} if disable_thinking else None
+                text = await _call_openai_compat(p['base_url'], p['api_key'], model, prompt, t, mt, extra_body=extra,
+                                                 images=images, final_only=task == 'translate')
             return text.strip(), f"{p['name']} {model or 'cli'}"
         except Exception as e:
             last_error = e
@@ -712,10 +735,10 @@ def _process_pdf(pdf_path: str, out_dir: str) -> dict:
 
 app = FastAPI()
 app.add_middleware(GZipMiddleware, minimum_size=1000)  # gzip responses > 1KB
-templates = Jinja2Templates(directory="templates")
+templates = Jinja2Templates(directory=os.path.join(RESOURCE_DIR, "templates"))
 
 # Where are the book folders located?
-BOOKS_DIR = os.path.join(os.path.dirname(__file__), "books")
+BOOKS_DIR = os.path.join(APP_DIR, "books")
 
 # TTS audio cache directory
 TTS_CACHE_DIR = os.path.join(BOOKS_DIR, ".tts_cache")
@@ -2040,6 +2063,102 @@ async def serve_pdf_file(book_id: str):
     return FileResponse(pdf_path, media_type="application/pdf")
 
 
+# Structured translations are actual PDFs, shared by preview and download.
+_pdf_generation_locks = {}
+
+
+def _structured_pdf_source(book_id: str) -> Path:
+    root = Path(BOOKS_DIR).resolve()
+    folder = (root / book_id).resolve()
+    if folder.parent != root or not book_id or '/' in book_id or '\\' in book_id:
+        raise HTTPException(400, 'Invalid book id')
+    source = folder / 'book.pdf'
+    if not source.is_file() or source.resolve().parent != folder:
+        raise HTTPException(404, 'PDF file not found')
+    return source
+
+
+def _structured_pdf_version(source: Path) -> str:
+    # Keys never participate in reports, filenames or logs.
+    providers = [{k: p.get(k) for k in ('id', 'base_url', 'model')} for p in _get_enabled_providers()]
+    signature = json.dumps([providers, _ai_config.get('task_routing', {})], sort_keys=True)
+    return pdf_translation.fingerprint(str(source), signature)
+
+
+@app.post('/api/pdf-translation/{book_id}')
+async def generate_pdf_translation(book_id: str, request: Request):
+    source = _structured_pdf_source(book_id)
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(400, 'Invalid JSON body') from exc
+    if not isinstance(body, dict) or type(body.get('force', False)) is not bool:
+        raise HTTPException(400, 'Expected an object and boolean force')
+    page_number = body.get('page')
+    if type(page_number) is not int or page_number < 1:
+        raise HTTPException(400, 'page must be a positive integer')
+    version = await asyncio.to_thread(_structured_pdf_version, source)
+    folder = source.parent / '.translated' / version
+    artifact = folder / f'page-{page_number}.pdf'
+    metadata = folder / f'page-{page_number}.json'
+    key = str(artifact)
+    lock = _pdf_generation_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        if artifact.is_file() and metadata.is_file() and not body.get('force', False):
+            return json.loads(metadata.read_text(encoding='utf-8'))
+        try:
+            plan = pdf_translation.analyze_page(str(source), page_number)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        targets, warnings = await pdf_translation.translate_regions(plan, _ai_complete)
+        plan['warnings'].extend(warnings)
+        try:
+            report = pdf_translation.render_page(str(source), plan, targets, str(artifact))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        report.update(version=version, status='review' if report['warnings'] else 'ready',
+                      pdf_url=f'/api/pdf-translation-file/{quote(book_id, safe="")}/{version}/{page_number}')
+        # Store auditable IDs and translations locally, never provider credentials.
+        audit = folder / f'page-{page_number}.audit.json'
+        audit.write_text(json.dumps({'plan': plan, 'targets': targets}, ensure_ascii=False), encoding='utf-8')
+        temporary = metadata.with_suffix('.tmp')
+        temporary.write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')
+        temporary.replace(metadata)
+        return report
+
+
+@app.get('/api/pdf-translation-file/{book_id}/{version}/{page_number}')
+async def translated_pdf_file(book_id: str, version: str, page_number: int):
+    source = _structured_pdf_source(book_id)
+    if not re.fullmatch(r'[a-f0-9]{24}', version) or page_number < 1:
+        raise HTTPException(400, 'Invalid artifact')
+    artifact = source.parent / '.translated' / version / f'page-{page_number}.pdf'
+    if not artifact.is_file():
+        raise HTTPException(404, 'Translation not generated')
+    return FileResponse(artifact, media_type='application/pdf', filename=f'page-{page_number}-zh-CN.pdf')
+
+
+@app.get('/api/pdf-translation-download/{book_id}/{version}')
+async def download_translated_document(book_id: str, version: str):
+    source = _structured_pdf_source(book_id)
+    if not re.fullmatch(r'[a-f0-9]{24}', version):
+        raise HTTPException(400, 'Invalid artifact')
+    folder = source.parent / '.translated' / version
+    def assemble():
+        with pdf_translation.PDF_LOCK, pdf_translation.fitz.open(source) as original:
+            paths = [folder / f'page-{i + 1}.pdf' for i in range(len(original))]
+            if not all(p.is_file() for p in paths):
+                raise HTTPException(409, 'Generate all pages before downloading')
+            with pdf_translation.fitz.open() as result:
+                for path in paths:
+                    with pdf_translation.fitz.open(path) as translated:
+                        result.insert_pdf(translated)
+                return result.tobytes(garbage=4, deflate=True)
+    data = assemble()
+    return Response(data, media_type='application/pdf', headers={
+        'Content-Disposition': "attachment; filename=translated-zh-CN.pdf"})
+
+
 # --- 每本书的持久化存储：翻译缓存 + 对话记录 ---
 
 _translation_lock = threading.Lock()
@@ -2107,8 +2226,250 @@ def _save_segment_cache(book_dir: str, cache: dict):
         pass
 
 
+def _classify_pdf_block(text: str, x0: float, y0: float, x1: float, y1: float) -> str:
+    """Classify a PDF text block so translation follows its fixed layout."""
+    width = max(1.0, x1 - x0)
+    height = max(1.0, y1 - y0)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    line_count = len(lines)
+    numeric_tokens = len(re.findall(r"(?:\d|\b(?:VCC|GND|VIN|VOUT|IOUT|ICC|ns|pF|mA)\b)", text, re.I))
+    header_terms = len(re.findall(
+        r"\b(?:symbol|parameter|conditions?|typ|guaranteed|limits?|units?)\b", text, re.I
+    ))
+
+    if height > width * 3:
+        return "vertical"
+    # Table headers can contain no numeric values at all.  A sequence of
+    # standard column labels is a stronger table signal than its geometry.
+    if line_count >= 3 and header_terms >= 3:
+        return "table"
+    # Short electrical-characteristic rows may contain just one value and
+    # unit (for example, a propagation-delay row).  Their line breaks are
+    # table cells emitted by the PDF, not prose.  Split them into spans so a
+    # translated parameter can never occupy the whole row.
+    technical_parameter = bool(re.search(
+        r"\b(?:propagation|rise|fall|delay|capacitance|frequency|current|"
+        r"voltage|temperature|power)\b", text, re.I
+    ))
+    if line_count >= 4 and numeric_tokens >= 1 and technical_parameter and width > height * 6:
+        return "table"
+    # A wide paragraph is not a table.  It must also carry several numerical
+    # values (the usual signature of a data-sheet row) before we split it.
+    if line_count >= 4 and numeric_tokens >= 4:
+        return "table"
+    if line_count <= 2 and len(text) <= 48:
+        return "label"
+    return "paragraph"
+
+
+def _normalise_segment_translation(text: str, layout: str) -> str:
+    """Remove AI wrappers and make output safe for its original PDF rectangle."""
+    cleaned = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    cleaned = re.sub(r"^(?:translation|translated text|译文|翻译|中文译文)\s*[:：]\s*", "", cleaned, flags=re.I)
+    if layout in {"table", "table_cell", "label"}:
+        return re.sub(r"\s*\n\s*", " ", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned)
+
+
+def _should_translate_table_span(text: str) -> bool:
+    """Select table labels while leaving values and signal names in place."""
+    value = (text or "").strip()
+    if len(value) < 2:
+        return False
+    compact = re.sub(r"\s+", "", value)
+    if re.match(r"^[+-]?(?:\d|\.\d)", value):
+        return False
+    if re.fullmatch(r"[\d\s.,:+\-–—/%°()=<>]+", value):
+        return False
+    if re.fullmatch(r"[A-Z][A-Z0-9_/#.]*", value):
+        return False
+    if re.fullmatch(r"[-+]?\d+(?:\.\d+)?(?:[a-zA-Z°]+)?", compact):
+        return False
+    if re.fullmatch(r"(?:[kMmunp]?V|[kMmunp]?A|ns|us|ms|MHz|kHz|pF|nF|uF|°C)", value, re.I):
+        return False
+    words = re.findall(r"[A-Za-z]+", value)
+    if words and all(word.isupper() or len(word) == 1 for word in words):
+        return False
+    if words and all(re.fullmatch(r"[a-z]?[A-Z]{2,}", word) for word in words):
+        return False
+    if re.search(r"\b(?:VIN|VOUT|IOUT|VCC|GND|ICC)\b", value, re.I) and not re.search(
+        r"\b(?:minimum|maximum|input|output|supply|current|voltage|temperature)\b", value, re.I
+    ):
+        return False
+    return bool(re.search(r"[A-Za-z]", value))
+
+
+def _looks_like_table_signal(text: str) -> bool:
+    """Return True for a compact sequence of circuit signal identifiers."""
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9]*", text or "")
+    if not tokens:
+        return False
+    return all(re.fullmatch(r"(?:[a-z]|[A-Z]{2,5}|[a-z][A-Z]{2,5})", token) for token in tokens)
+
+
+PDF_SEGMENT_CACHE_VERSION = "v8"
+
+
+_TABLE_CELL_GLOSSARY = {
+    "Absolute Maximum Ratings": "绝对最大额定值",
+    "Absolute Maximum Ratings (Notes 1 & 2)": "绝对最大额定值（注1和注2）",
+    "(Notes 1 & 2)": "（注1和注2）",
+    "If Military /Aerospace specified devices are required,": "如需军用/航空航天指定器件，",
+    "please contact the National Semiconductor Sales": "请联系国家半导体销售",
+    "Office/Distributors for availability and specifications.": "办事处/分销商获取供货和规格。",
+    "Operating Conditions": "工作条件",
+    "DC Electrical Characteristics (Note 4)": "直流电气特性（注4）",
+    "AC Electrical Characteristics": "交流电气特性",
+    "Symbol": "符号",
+    "Parameter": "参数",
+    "Conditions": "条件",
+    "Units": "单位",
+    "Typ": "典型值",
+    "Guaranteed Limit": "保证限值",
+    "Guaranteed Limits": "保证限值",
+    "Supply Voltage": "电源电压",
+    "DC Input Voltage": "直流输入电压",
+    "DC Output Voltage": "直流输出电压",
+    "Clamp Diode Current": "钳位二极管电流",
+    "DC Output Current, per pin": "每引脚直流输出电流",
+    "or GND Current, per pin": "或 GND 每引脚电流",
+    "Storage Temperature Range": "存储温度范围",
+    "Power Dissipation": "功耗",
+    "Min": "最小值",
+    "Max": "最大值",
+    "DC Input or Output Voltage": "直流输入或输出电压",
+    "Operating Temp. Range": "工作温度范围",
+    "Input Rise or Fall Times": "输入上升或下降时间",
+    "Minimum High Level": "最小高电平",
+    "Maximum Low Level": "最大低电平",
+    "Maximum Low Level V": "最大低电平 V",
+    "Input Voltage": "输入电压",
+    "Input Voltage **": "输入电压**",
+    "Output Voltage": "输出电压",
+    "Maximum Input": "最大输入",
+    "Maximum Quiescent": "最大静态",
+    "Supply Current": "电源电流",
+    "Current": "电流",
+    "Minimum Propagation": "最小传播",
+    "Minimum Propagation Delay": "最小传播延迟",
+    "Maximum Propagation": "最大传播",
+    "Maximum Propagation Delay": "最大传播延迟",
+    "Delay": "延迟",
+    "Maximum Output Rise": "最大输出上升",
+    "Maximum Output Rise and Fall Time": "最大输出上升和下降时间",
+    "and Fall Time": "和下降时间",
+    "Power Dissipation": "功耗",
+    "Capacitance": "电容",
+}
+
+
+def _calibrated_table_cell_translation(text: str) -> str | None:
+    """Return a reviewed, compact Chinese label for common data-sheet cells."""
+    source = re.sub(r"\s+", " ", text or "").strip()
+    source = re.sub(r"\s*([,.;:])\s*", r"\1 ", source).strip()
+    direct = _TABLE_CELL_GLOSSARY.get(source)
+    if direct:
+        return direct
+    # PyMuPDF can split a parenthesized signal name across spans.  The visible
+    # label is still stable enough to use the reviewed base translation.
+    base_label = re.sub(r"\s*\([^)]*\)?$", "", source).strip()
+    base_translation = _TABLE_CELL_GLOSSARY.get(base_label)
+    if base_translation:
+        signal = re.search(r"\(\s*([A-Za-z][A-Za-z0-9\s,/_]*)\s*\)", source)
+        if signal:
+            compact_signal = re.sub(r"\s+", "", signal.group(1))
+            return f"{base_translation}（{compact_signal}）"
+        return base_translation
+    compact_source = re.sub(r"\s+", "", source)
+    if compact_source.startswith("DCVCCorGNDCurrent"):
+        return "VCC或GND每引脚电流（ICC）"
+    return None
+
+
+def _merge_pdf_heading_parts(blocks: list[dict], page_num: int) -> list[dict]:
+    """Merge adjacent fragments that form one fixed-layout data-sheet label."""
+    merged = []
+    consumed = set()
+    for index, first in enumerate(blocks):
+        if index in consumed:
+            continue
+        # The PDF text stream is normally spatially ordered, but a stacked
+        # column heading can be interrupted by a neighbouring column on the
+        # same baseline (``Guaranteed``, ``Units``, ``Limit``).  Search the
+        # nearby header fragments rather than assuming they are consecutive.
+        for candidate_index in range(index + 1, min(len(blocks), index + 7)):
+            if candidate_index in consumed:
+                continue
+            second = blocks[candidate_index]
+            can_merge_heading = (
+                first.get('layout') == 'table_cell'
+                and second.get('layout') == 'table_cell'
+                and re.search(r"\b(?:Ratings|Characteristics)$", first['source'], re.I)
+                and second['source'].lstrip().startswith('(')
+                and abs(first['y0'] - second['y0']) <= 4
+                and abs(first['x1'] - second['x0']) <= 4
+            )
+            # PDF generators commonly put the last word of a narrow parameter
+            # cell on a separate baseline.  It is still one visual cell:
+            # combine only aligned, immediately adjacent fragments that have
+            # a compact reviewed translation.
+            can_merge_wrapped_label = (
+                first.get('layout') == 'table_cell'
+                and second.get('layout') == 'table_cell'
+                and (
+                    abs(first['x0'] - second['x0']) <= 2
+                    or abs((first['x0'] + first['x1']) - (second['x0'] + second['x1'])) <= 4
+                )
+                and 0 <= second['y0'] - first['y1'] <= 4
+                and second['x1'] <= first['x1'] + 2
+                and len(first['source']) <= 48
+                and len(second['source']) <= 24
+            )
+            if not (can_merge_heading or can_merge_wrapped_label):
+                continue
+            source = f"{first['source']} {second['source']}"
+            if not _calibrated_table_cell_translation(source):
+                continue
+            combined = dict(first)
+            combined.update({
+                'x1': max(first['x1'], second['x1']),
+                'y0': min(first['y0'], second['y0']),
+                'y1': max(first['y1'], second['y1']),
+                'width': round(max(first['x1'], second['x1']) - first['x0'], 2),
+                'height': round(max(first['y1'], second['y1']) - min(first['y0'], second['y0']), 2),
+                'source': source,
+                'cache_key': f"table-{PDF_SEGMENT_CACHE_VERSION}:{page_num}:{hashlib.sha1(source.encode('utf-8')).hexdigest()[:12]}",
+            })
+            merged.append(combined)
+            consumed.add(candidate_index)
+            break
+        else:
+            merged.append(first)
+    return merged
+
+
+def _segment_translation_prompt(block: dict) -> str:
+    """Build a layout-aware prompt for one fixed-coordinate PDF text block."""
+    layout = block["layout"]
+    instructions = {
+        "paragraph": "This is a prose paragraph. Keep its meaning concise; preserve at most the meaningful paragraph breaks.",
+        "label": "This is a heading or short label. Return one compact line only; do not add a line break.",
+        "table_cell": "This is one textual cell inside a technical table. Translate only this label into one short line. Do not add values, units, columns, or line breaks.",
+        "vertical": "This is vertical page artwork. Return a concise title only; do not add line breaks.",
+    }[layout]
+    return f"""Translate the following technical English PDF text block into accurate Simplified Chinese.
+The result will be placed back into its original fixed rectangle, so layout is mandatory:
+- Block type: {layout}; rectangle: {block['width']:.0f} x {block['height']:.0f} PDF points.
+- {instructions}
+- Preserve numbers, units, signal names, part numbers, formulas, and abbreviations exactly where possible.
+- Do not add explanations, Markdown, prefixes, or suffixes.
+
+Source text:
+{block['source'][:4000]}"""
+
+
 def _extract_pdf_blocks(pdf_path: str, page_num: int):
-    """提取某页的文本块（段落），返回 [{'y0','y1','source'}]。"""
+    """提取某页的文本块（段落）及其 PDF 坐标。"""
     import fitz
     doc = fitz.open(pdf_path)
     try:
@@ -2116,16 +2477,124 @@ def _extract_pdf_blocks(pdf_path: str, page_num: int):
             return None
         page = doc[page_num - 1]
         blocks = page.get_text("blocks")  # (x0,y0,x1,y1,text,block_no,block_type)
-        result = []
+        dict_blocks = [b for b in page.get_text("dict")["blocks"] if b.get("type") == 0]
+        raw_blocks = []
         for b in blocks:
             x0, y0, x1, y1, text = b[0], b[1], b[2], b[3], b[4]
             text = (text or '').strip()
             if len(text) < 2:
                 continue  # 过滤页码、页眉、图片块等
-            result.append({'y0': round(float(y0), 2), 'y1': round(float(y1), 2), 'source': text})
+            raw_blocks.append({
+                'x0': round(float(x0), 2), 'x1': round(float(x1), 2),
+                'y0': round(float(y0), 2), 'y1': round(float(y1), 2),
+                'source': text,
+                'layout': _classify_pdf_block(text, x0, y0, x1, y1),
+                'width': round(float(x1 - x0), 2), 'height': round(float(y1 - y0), 2),
+            })
         # 按 y 坐标排序，保证段落顺序正确（页眉在前、正文居中、页脚在后）
-        result.sort(key=lambda b: b['y0'])
-        return result
+        raw_blocks.sort(key=lambda b: b['y0'])
+        result = []
+        for legacy_index, block in enumerate(raw_blocks):
+            if block['layout'] != 'table':
+                lines = [line.strip() for line in block['source'].splitlines() if line.strip()]
+                was_old_wide_table = len(lines) >= 4 and block['width'] > block['height'] * 4
+                # Do not reuse an old cache entry if its source used to be
+                # flattened as a table row by the previous renderer.
+                block['cache_key'] = (
+                    f"text-v2:{page_num}:{legacy_index}" if was_old_wide_table
+                    else f"{page_num}:{legacy_index}"
+                )
+                result.append(block)
+                continue
+
+            # A table block is expanded into real PyMuPDF text spans. This
+            # preserves the original columns, rules, values and units.
+            match = min(
+                dict_blocks,
+                key=lambda candidate: sum(
+                    abs(float(candidate['bbox'][n]) - block[key])
+                    for n, key in enumerate(('x0', 'y0', 'x1', 'y1'))
+                ),
+                default=None,
+            )
+            line_starts = [round(float(line['bbox'][0]) / 5) * 5 for line in (match or {}).get('lines', [])]
+            repeated_columns = sum(line_starts.count(start) >= 2 for start in set(line_starts))
+            # Header bands and the last few parameter rows often have only
+            # one occurrence of each column.  They are still tables: keeping
+            # them as one paragraph makes the Chinese shrink across every
+            # column and destroys the original grid.  Recognise the stable
+            # data-sheet vocabulary and split its real spans just like a
+            # regular multi-row table.
+            table_header_or_row = bool(re.search(
+                r"\b(?:Symbol|Parameter|Conditions|Units|Typ|Guaranteed\s+Limits|"
+                r"Maximum\s+(?:Input|Quiescent)|Supply\s+Current|"
+                r"IIN|ICC|VIH|VIL|VOH|VOL|tPHL|tPLH|CIN|CPD)\b",
+                block['source'],
+                re.I,
+            ))
+            if match is None or (repeated_columns < 3 and not table_header_or_row):
+                # Wide multi-column prose can look table-like in plain-text
+                # extraction. Keep it as a paragraph instead of splitting
+                # every word, and use a new key to discard its old flat cache.
+                block['layout'] = 'paragraph'
+                block['cache_key'] = f"text-v2:{page_num}:{legacy_index}"
+                result.append(block)
+                continue
+            # Superscripts/subscripts (for example the ``CC`` in ``VCC``)
+            # are emitted as separate PDF lines a couple of points away from
+            # their base text.  Cluster nearby baselines before grouping spans
+            # so the replacement box masks the whole technical label.
+            rows = []
+            for line in match.get('lines', []):
+                for span in line.get('spans', []):
+                    y0 = round(float(span['bbox'][1]), 1)
+                    if rows and abs(y0 - rows[-1]['y0']) <= 3.2:
+                        rows[-1]['spans'].append(span)
+                    else:
+                        rows.append({'y0': y0, 'spans': [span]})
+            for row_index, row in enumerate(rows):
+                spans = row['spans']
+                spans.sort(key=lambda item: float(item['bbox'][0]))
+                groups, current = [], []
+                for span in spans:
+                    span_text = ' '.join((span.get('text') or '').split())
+                    current_text = ' '.join(
+                        ' '.join((item.get('text') or '').split()) for item in current
+                    )
+                    gap = float(span['bbox'][0]) - float(current[-1]['bbox'][2]) if current else 0
+                    # A circuit symbol and its prose label can share a PDF
+                    # baseline with only a tiny gap (for example, ``tTLH``
+                    # followed by ``Maximum Output Rise``).  They are two
+                    # visual cells, not one translation target.
+                    split_signal_from_label = (
+                        bool(current)
+                        and _looks_like_table_signal(current_text)
+                        and _should_translate_table_span(span_text)
+                    )
+                    if current and (gap > 8 or split_signal_from_label):
+                        groups.append(current)
+                        current = []
+                    current.append(span)
+                if current:
+                    groups.append(current)
+                for group_index, group in enumerate(groups):
+                    pieces = [' '.join((item.get('text') or '').split()) for item in group]
+                    text = ' '.join(piece for piece in pieces if piece).strip()
+                    if not _should_translate_table_span(text):
+                        continue
+                    x0 = min(float(item['bbox'][0]) for item in group)
+                    y0 = min(float(item['bbox'][1]) for item in group)
+                    x1 = max(float(item['bbox'][2]) for item in group)
+                    y1 = max(float(item['bbox'][3]) for item in group)
+                    result.append({
+                        'x0': round(x0, 2), 'x1': round(x1, 2),
+                        'y0': round(y0, 2), 'y1': round(y1, 2),
+                        'source': text,
+                        'layout': 'table_cell',
+                        'width': round(x1 - x0, 2), 'height': round(y1 - y0, 2),
+                        'cache_key': f"table-{PDF_SEGMENT_CACHE_VERSION}:{page_num}:{legacy_index}:{row_index}:{group_index}:{hashlib.sha1(text.encode('utf-8')).hexdigest()[:12]}",
+                    })
+        return _merge_pdf_heading_parts(result, page_num)
     finally:
         doc.close()
 
@@ -2219,43 +2688,51 @@ async def translate_pdf_segments(book_id: str, req: dict):
     segments = []
     pending = []  # (index, block)
     for i, b in enumerate(blocks):
-        key = f"{page_num}:{i}"
+        key = b['cache_key']
         cached = cache.get(key)
         if cached:
-            segments.append({'y0': b['y0'], 'y1': b['y1'], 'source': b['source'], 'target': cached})
+            segments.append({
+                'x0': b['x0'], 'x1': b['x1'], 'y0': b['y0'], 'y1': b['y1'],
+                'source': b['source'], 'target': _normalise_segment_translation(cached, b['layout']),
+                'layout': b['layout'],
+            })
         else:
-            segments.append({'y0': b['y0'], 'y1': b['y1'], 'source': b['source'], 'target': None})
-            pending.append((i, b))
+            segments.append({
+                'x0': b['x0'], 'x1': b['x1'], 'y0': b['y0'], 'y1': b['y1'],
+                'source': b['source'], 'target': None, 'layout': b['layout'],
+            })
+            # ``segments`` omits intentionally untranslated cells, so its
+            # index is not the original ``blocks`` index.
+            pending.append((len(segments) - 1, b))
 
     # 并发翻译未缓存的块（限并发 4，逐块翻译保证段落严格对齐）
     if pending:
         sem = asyncio.Semaphore(4)
 
-        async def _translate_one(i, b):
+        async def _translate_one(segment_index, b):
+            if b['layout'] == 'table_cell':
+                calibrated = _calibrated_table_cell_translation(b['source'])
+                if calibrated:
+                    return segment_index, b, calibrated
             async with sem:
-                prompt = f"""请将以下英文技术文档片段翻译成中文。
-- 准确传达原意，术语保留英文缩写或附注原文
-- 保留数字、寄存器名、信号名、命令码
-- 直接输出译文，不要解释、不要加前缀后缀
-
-原文：
-{b['source'][:4000]}"""
                 try:
-                    result, _ = await _ai_complete(prompt, temperature=0.1, max_tokens=4096, task='translate')
-                    return i, (result or '').strip()
+                    result, _ = await _ai_complete(
+                        _segment_translation_prompt(b), temperature=0.1, max_tokens=4096, task='translate'
+                    )
+                    return segment_index, b, _normalise_segment_translation(result or '', b['layout'])
                 except Exception as e:
-                    print(f"[segments] block {i} translate failed: {e}")
-                    return i, ''
+                    print(f"[segments] segment {segment_index} translate failed: {e}")
+                    return segment_index, b, ''
 
         results = await asyncio.gather(*[_translate_one(i, b) for i, b in pending])
 
         # 写回缓存
         with _translation_lock:
             latest = _load_segment_cache(book_dir)
-            for i, target in results:
+            for segment_index, block, target in results:
                 if target:
-                    latest[f"{page_num}:{i}"] = target
-                    segments[i]['target'] = target
+                    latest[block['cache_key']] = target
+                    segments[segment_index]['target'] = target
             _save_segment_cache(book_dir, latest)
 
     # 过滤掉翻译失败的块
@@ -2521,7 +2998,7 @@ async def set_cover_from_url(book_id: str, req: dict):
 
 def auto_import_default_books():
     """Scan assets/ for specific default EPUBs and import them if not already in library."""
-    default_book = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "Meditations by Emperor of Rome Marcus Aurelius.epub")
+    default_book = os.path.join(RESOURCE_DIR, "assets", "Meditations by Emperor of Rome Marcus Aurelius.epub")
     if not os.path.exists(default_book):
         return
 
@@ -2554,4 +3031,3 @@ if __name__ == "__main__":
     # Perform auto-import before starting server
     auto_import_default_books()
     uvicorn.run(app, host="127.0.0.1", port=8123)
-

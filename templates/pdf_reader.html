@@ -354,6 +354,9 @@
         .ai-provider-input, .ai-provider-select { width: 100%; padding: 7px 10px; border: 1px solid var(--outline); border-radius: 8px; font-size: 0.75rem; background: var(--surface); color: var(--on-surface); outline: none; font-family: inherit; transition: border-color 0.2s; box-sizing: border-box; }
         .ai-provider-input:focus, .ai-provider-select:focus { border-color: var(--primary); }
         .ai-provider-row { margin-bottom: 8px; }
+        .ai-provider-model-control { display: flex; gap: 6px; align-items: center; }
+        .ai-provider-model-control .ai-provider-select { flex: 1; min-width: 0; }
+        .ai-provider-model-control .ai-provider-btn { flex: 0 0 auto; white-space: nowrap; }
         .ai-provider-label { font-size: 0.62rem; font-weight: 700; color: var(--secondary); margin-bottom: 4px; display: block; }
         .ai-provider-actions { display: flex; gap: 6px; margin-top: 10px; }
         .ai-provider-btn { flex: 1; padding: 7px 0; border-radius: 8px; border: 1px solid var(--outline); background: color-mix(in srgb, var(--outline) 50%, var(--surface)); color: var(--on-surface); font-size: 0.72rem; font-weight: 700; cursor: pointer; transition: 0.15s; font-family: inherit; }
@@ -376,32 +379,7 @@
         .toggle-switch input:checked + .toggle-track { background: var(--primary); }
         .toggle-switch input:checked + .toggle-track::before { transform: translateX(16px); }
 
-        .page-translation { display: none; margin-top: 10px; padding: 12px 14px; border-top: 3px solid var(--primary); background: color-mix(in srgb, var(--primary) 8%, #fff); border-radius: 0 0 8px 8px; font-size: 0.8rem; line-height: 1.7; color: #1a1a1a; word-break: break-word; position: relative; z-index: 5; }
-        body.bilingual-on .page-translation { display: block; }
-        .page-translation .pt-loading { color: var(--secondary); opacity: 0.7; font-size: 0.75rem; }
-        .page-translation .pt-error { color: #EF4444; font-size: 0.75rem; }
-        .page-translation .pt-label { font-size: 0.62rem; font-weight: 800; letter-spacing: 0.08em; color: var(--primary); margin-bottom: 6px; text-transform: uppercase; }
-
-        /* --- 双语对照：三种模式 --- */
-        .bi-mode-select { width: 100%; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 8px; font-size: 0.72rem; background: var(--surface); color: var(--on-surface); outline: none; font-family: inherit; cursor: pointer; }
-        .bi-mode-select:focus { border-color: var(--primary); }
-
-        /* overlay 模式：译文浮层，定位在每段原文下方 */
-        .bi-overlay { position: absolute; top: 0; left: 0; right: 0; z-index: 4; pointer-events: none; }
-        .bi-overlay-seg { position: absolute; left: 8px; right: 8px; padding: 2px 6px; font-size: 0.62rem; line-height: 1.4; color: #065f46; background: rgba(209, 250, 229, 0.92); border-radius: 3px; border-left: 2px solid #10B981; word-break: break-word; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
-
-        /* contrast 模式：逐段对照块 */
-        .bi-contrast { padding: 10px 12px; }
-        .bi-contrast-seg { margin-bottom: 10px; }
-        .bi-contrast-seg:last-child { margin-bottom: 0; }
-        .bi-contrast-src { font-size: 0.68rem; color: #6b7280; line-height: 1.5; margin-bottom: 2px; }
-        .bi-contrast-target { font-size: 0.8rem; color: #1a1a1a; line-height: 1.6; }
-
-        /* reflow 模式：流式重排，原文+译文交错 */
-        .bi-reflow { position: relative; z-index: 6; background: #fff; min-height: 100%; }
-        .bi-reflow-seg { padding: 8px 16px; border-bottom: 1px solid #eee; }
-        .bi-reflow-src { font-size: 0.8rem; color: #6b7280; line-height: 1.6; margin-bottom: 4px; }
-        .bi-reflow-target { font-size: 0.85rem; color: #1a1a1a; line-height: 1.7; }
+        /* 译文替换：在原文文本块内排入译文，保留 PDF 图表与版式 */
 
         /* --- Search Panel --- */
         #search-panel { position: fixed; top: 80px; width: 330px; max-height: 70vh; background: color-mix(in srgb, var(--surface) 98%, transparent); backdrop-filter: blur(20px); border: 1px solid var(--outline); border-radius: 20px; padding: 18px; box-shadow: 0 25px 60px rgba(0,0,0,0.15); z-index: 3000; display: none; }
@@ -647,18 +625,16 @@
         </div>
         <div class="setting-section">
             <label class="setting-toggle">
-                <div class="setting-label" style="margin-bottom:0">双语对照翻译</div>
+                <div class="setting-label" style="margin-bottom:0">中文 PDF（保留版式）</div>
                 <div class="toggle-switch"><input type="checkbox" id="toggle-bilingual"><span class="toggle-track"></span></div>
             </label>
-            <div class="ai-provider-row" style="margin-top:10px">
-                <label class="ai-provider-label">对照模式</label>
-                <select class="bi-mode-select" id="bi-mode-select">
-                    <option value="overlay">浮层（译文出现在每段原文下方）</option>
-                    <option value="contrast">逐段对照（每页译文区按段对照）</option>
-                    <option value="reflow">流式重排（原文译文交错排版）</option>
-                </select>
+            <div class="ai-provider-hint">按真实单元格翻译，预览与下载使用同一份 PDF。无法可靠替换的区域保留原文。</div>
+            <div id="pdf-translation-status" class="ai-provider-hint" role="status"></div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+                <button onclick="Bilingual.retry()">重试本页</button>
+                <button onclick="Bilingual.downloadPage()">下载本页</button>
+                <button onclick="Bilingual.downloadAll(this)">翻译并下载整本</button>
             </div>
-            <div class="ai-provider-hint">「浮层」译文紧贴每段原文；「逐段对照」译文集中在页面下方逐条对应；「流式重排」原文译文交错排版（阅读模式）。</div>
         </div>
         <div class="setting-section">
             <div class="setting-label">AI 翻译服务</div>
@@ -672,7 +648,12 @@
             </div>
             <div class="ai-provider-row">
                 <label class="ai-provider-label">模型（可选）</label>
-                <input class="ai-provider-input" id="ai-provider-model" type="text" placeholder="默认" autocomplete="off">
+                <div class="ai-provider-model-control">
+                    <select class="ai-provider-select" id="ai-provider-model" aria-label="模型">
+                        <option value="">默认</option>
+                    </select>
+                    <button type="button" class="ai-provider-btn" onclick="AIProvider.fetchModels()">获取模型</button>
+                </div>
             </div>
             <div class="ai-provider-row">
                 <label class="ai-provider-label">视觉模型（可选，用于看图）</label>
@@ -1129,7 +1110,8 @@
         if (pageRendered[pageNum - 1] || renderingPages.has(pageNum)) return;
         renderingPages.add(pageNum);
         try {
-            const page = await pdfDoc.getPage(pageNum);
+            const translatedDoc = window.Bilingual?.pageDocument(pageNum);
+            const page = await (translatedDoc ? translatedDoc.getPage(1) : pdfDoc.getPage(pageNum));
             const desiredWidth = Zoom._getWidth();
             const viewport0 = page.getViewport({ scale: 1 });
             const scale = desiredWidth / viewport0.width;
@@ -1166,7 +1148,7 @@
             hlLayer.className = 'pdf-highlight-layer';
             container.appendChild(hlLayer);
 
-            // 双语译文（按模式渲染：overlay/contrast/reflow）
+            // Translation is already in the PDF canvas, never an HTML cover layer.
             if (window.Bilingual) Bilingual.render(pageNum, container, scale);
 
             pageRendered[pageNum - 1] = true;
@@ -1180,6 +1162,7 @@
             console.error(`Failed to render page ${pageNum}:`, e);
         } finally {
             renderingPages.delete(pageNum);
+            if (window.Bilingual?._pending.delete(pageNum)) Bilingual._rerenderPage(pageNum);
         }
     }
 
@@ -1202,6 +1185,7 @@
             cumHeight += pageContainers[i].offsetHeight + 8;
             if (cumHeight > viewerMid) {
                 currentPage = i + 1;
+                window.Bilingual?._status();
                 pageIndicator.textContent = `${i + 1} / ${pageContainers.length}`;
                 TOC.updateActive(i + 1);
                 // Update progress
@@ -1213,6 +1197,7 @@
             }
         }
         currentPage = pageContainers.length;
+        window.Bilingual?._status();
         pageIndicator.textContent = `${pageContainers.length} / ${pageContainers.length}`;
         document.getElementById('progress-fill').style.width = '100%';
     }
@@ -2590,6 +2575,7 @@
         },
         _providers: [],
         _available: [],
+        _modelLists: {},
         _setStatus(msg, cls) {
             const el = document.getElementById('ai-provider-status');
             el.textContent = msg || '';
@@ -2628,7 +2614,7 @@
                 id,
                 existing: this._providers.find(p => p.id === id),
                 keyInput: document.getElementById('ai-provider-key'),
-                modelInput: document.getElementById('ai-provider-model'),
+                modelSelect: document.getElementById('ai-provider-model'),
                 visionInput: document.getElementById('ai-provider-vision'),
                 cliInput: document.getElementById('ai-provider-cli'),
                 cliRow: document.getElementById('ai-provider-cli-row'),
@@ -2637,9 +2623,8 @@
             };
         },
         _applyCurrent() {
-            const { id, existing, keyInput, modelInput, visionInput, cliInput, cliRow, urlInput, urlRow } = this._current();
-            if (existing && existing.model) modelInput.value = existing.model; else modelInput.value = '';
-            modelInput.placeholder = (existing && existing.default_model) ? existing.default_model : '默认';
+            const { id, existing, keyInput, modelSelect, visionInput, cliInput, cliRow, urlInput, urlRow } = this._current();
+            this._renderModelOptions(id, (existing && existing.model) || '');
             if (visionInput) {
                 if (existing && existing.vision_model) visionInput.value = existing.vision_model; else visionInput.value = '';
                 visionInput.placeholder = (existing && existing.model) ? existing.model : '留空则用上面模型';
@@ -2656,10 +2641,58 @@
             this._setStatus('', '');
         },
         _onChange() { this._applyCurrent(); },
+        _renderModelOptions(id, selectedModel) {
+            const select = document.getElementById('ai-provider-model');
+            const models = this._modelLists[id] || [];
+            const uniqueModels = [...new Set([selectedModel, ...models].filter(Boolean))];
+            select.innerHTML = '';
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = '默认';
+            select.appendChild(defaultOption);
+            for (const model of uniqueModels) {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = model;
+                select.appendChild(option);
+            }
+            select.value = selectedModel || '';
+        },
+        async fetchModels() {
+            const { id, existing, keyInput, urlInput, modelSelect } = this._current();
+            const button = document.querySelector('.ai-provider-model-control .ai-provider-btn');
+            const previousText = button.textContent;
+            button.disabled = true;
+            button.textContent = '获取中…';
+            this._setStatus('正在获取可用模型…', 'info');
+            try {
+                const response = await fetch('/api/ai/fetch-models', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        id,
+                        api_key: keyInput.value.trim(),
+                        base_url: urlInput.value.trim() || (existing && existing.base_url) || '',
+                    }),
+                });
+                const data = await response.json();
+                if (!data.models || data.models.length === 0) {
+                    throw new Error(data.error || '未获取到模型');
+                }
+                this._modelLists[id] = data.models;
+                this._renderModelOptions(id, modelSelect.value);
+                this._setStatus(`已获取 ${data.models.length} 个模型`, 'ok');
+            } catch (error) {
+                this._setStatus(`获取模型失败: ${error.message}`, 'fail');
+            } finally {
+                button.disabled = false;
+                button.textContent = previousText;
+            }
+        },
         _collect() {
             const id = document.getElementById('ai-provider-select').value;
             const key = document.getElementById('ai-provider-key').value.trim();
-            const model = document.getElementById('ai-provider-model').value.trim();
+            const model = document.getElementById('ai-provider-model').value;
             const visionInput = document.getElementById('ai-provider-vision');
             const vision = visionInput ? visionInput.value.trim() : '';
             const cliInput = document.getElementById('ai-provider-cli');
@@ -2719,197 +2752,137 @@
     };
     window.AIProvider = AIProvider;
 
-    /* ========== 双语对照翻译 ========== */
+    /* ========== Structured Chinese PDF: preview equals export ========== */
     const Bilingual = {
-        _on: false,
-        _mode: 'overlay', // 'overlay' | 'contrast' | 'reflow'
-        _cache: new Map(), // page -> { status: 'loading'|'done'|'error', segments: [...] }
-        _queue: [],
-        _active: 0,
-        _observer: null,
-        MAX_CONCURRENT: 2,
-
+        _on: false, _cache: new Map(), _queue: [], _active: 0,
+        _pending: new Set(), _observer: null, MAX_CONCURRENT: 2,
         init() {
-            let saved = null;
-            try { saved = localStorage.getItem('pdf_bilingual'); } catch (e) {}
-            this._on = saved === '1';
-            let mode = null;
-            try { mode = localStorage.getItem('pdf_bilingual_mode'); } catch (e) {}
-            if (mode === 'overlay' || mode === 'contrast' || mode === 'reflow') this._mode = mode;
-
+            try { this._on = localStorage.getItem('pdf_bilingual') === '1'; } catch {}
             const checkbox = document.getElementById('toggle-bilingual');
-            if (checkbox) {
-                checkbox.checked = this._on;
-                checkbox.addEventListener('change', (e) => this.toggle(e.target.checked));
-            }
-            const modeSel = document.getElementById('bi-mode-select');
-            if (modeSel) {
-                modeSel.value = this._mode;
-                modeSel.addEventListener('change', (e) => {
-                    this._mode = e.target.value;
-                    try { localStorage.setItem('pdf_bilingual_mode', this._mode); } catch (err) {}
-                    // 切换模式后重新渲染已渲染页
-                    pageContainers.forEach((_, i) => { if (pageRendered[i]) this._rerenderPage(i + 1); });
-                });
-            }
-
-            document.body.classList.toggle('bilingual-on', this._on);
-
-            if (!this._observer) {
-                this._observer = new IntersectionObserver((entries) => {
-                    for (const e of entries) {
-                        if (e.isIntersecting) {
-                            this._request(parseInt(e.target.dataset.pageNum));
-                        }
-                    }
-                }, { root: viewer, rootMargin: '1600px 0px' });
-            }
+            checkbox.checked = this._on;
+            checkbox.addEventListener('change', e => this.toggle(e.target.checked));
+            this._observer = new IntersectionObserver(entries => {
+                for (const entry of entries) if (entry.isIntersecting)
+                    this._request(Number(entry.target.dataset.pageNum));
+            }, { root: viewer, rootMargin: '800px 0px' });
             pageContainers.forEach(c => this._observer.observe(c));
-
-            if (this._on) {
-                this._request(currentPage);
-                this._request(currentPage + 1);
-            }
-            console.log('[Bilingual] init _on=', this._on, '_mode=', this._mode);
+            if (this._on) this._request(currentPage);
+            this._status();
         },
-
         toggle(on) {
             this._on = on;
-            try { localStorage.setItem('pdf_bilingual', on ? '1' : '0'); } catch (e) {}
-            document.body.classList.toggle('bilingual-on', on);
-            if (on) {
-                this._request(currentPage);
-                this._request(currentPage + 1);
-            } else {
-                // 关闭时移除所有译文渲染，恢复原图
-                pageContainers.forEach((_, i) => { if (pageRendered[i]) this._rerenderPage(i + 1); });
+            document.getElementById('toggle-bilingual').checked = on;
+            try { localStorage.setItem('pdf_bilingual', on ? '1' : '0'); } catch {}
+            if (!on) {
+                this._queue = [];
+                for (const [page, entry] of this._cache) if (entry.status === 'queued') this._cache.delete(page);
             }
-            console.log('[Bilingual] toggle on=', on);
+            pageContainers.forEach((_, i) => {
+                if (pageRendered[i] || renderingPages.has(i + 1)) this._rerenderPage(i + 1);
+            });
+            if (on) this._request(currentPage);
+            this._status();
         },
-
-        _esc(t) { return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); },
-
-        _request(pageNum) {
-            if (!this._on || !pageNum || pageNum < 1 || pageNum > pageContainers.length) return;
+        pageDocument(pageNum) {
             const cached = this._cache.get(pageNum);
-            if (cached && (cached.status === 'done' || cached.status === 'loading')) return;
-            if (this._active >= this.MAX_CONCURRENT) {
-                if (!this._queue.includes(pageNum)) this._queue.push(pageNum);
-                return;
-            }
-            this._start(pageNum);
+            return this._on && cached?.status === 'done' ? cached.doc : null;
         },
-
-        async _start(pageNum) {
-            this._cache.set(pageNum, { status: 'loading', segments: [] });
+        _request(pageNum, force = false) {
+            if (!this._on || pageNum < 1 || pageNum > pageContainers.length) return;
+            const cached = this._cache.get(pageNum);
+            if (!force && cached) return; // Failed pages require an explicit retry.
+            if (cached?.status === 'loading') return;
+            this._cache.set(pageNum, { status: 'queued' });
+            this._queue.push({ pageNum, force });
+            this._pump();
+        },
+        _pump() {
+            while (this._on && this._active < this.MAX_CONCURRENT && this._queue.length) {
+                const item = this._queue.shift();
+                this._start(item.pageNum, item.force);
+            }
+        },
+        async _start(pageNum, force) {
             this._active++;
+            this._cache.set(pageNum, { status: 'loading' });
+            this._status();
             try {
-                const resp = await fetch(`/api/pdf-segments/${encodeURIComponent(BOOK_ID)}`, {
+                const resp = await fetch('/api/pdf-translation/' + encodeURIComponent(BOOK_ID), {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ page: pageNum })
+                    body: JSON.stringify({ page: pageNum, force })
                 });
-                const data = await resp.json();
-                const segments = data.segments || [];
-                if (segments.length) {
-                    this._cache.set(pageNum, { status: 'done', segments });
-                } else {
-                    this._cache.set(pageNum, { status: 'error', segments: [] });
-                }
+                const report = await resp.json();
+                if (!resp.ok) throw new Error(report.detail || '生成失败');
+                const doc = await getDocument(report.pdf_url + '?v=' + Date.now()).promise;
+                this._cache.set(pageNum, { status: 'done', doc, report });
+                this._rerenderPage(pageNum);
             } catch (e) {
-                this._cache.set(pageNum, { status: 'error', segments: [] });
-            }
-            this._active--;
-            if (pageRendered[pageNum - 1]) this._rerenderPage(pageNum);
-            while (this._active < this.MAX_CONCURRENT && this._queue.length) {
-                const next = this._queue.shift();
-                this._start(next);
+                this._cache.set(pageNum, { status: 'error', message: e.message });
+            } finally {
+                this._active--;
+                this._status();
+                this._pump();
             }
         },
-
-        // 重新渲染某页的译文（按当前模式）
         _rerenderPage(pageNum) {
-            const container = pageContainers[pageNum - 1];
-            if (!container) return;
-            const scale = parseFloat(container.style.getPropertyValue('--scale-factor')) || 1;
-            this.render(pageNum, container, scale);
+            if (renderingPages.has(pageNum)) { this._pending.add(pageNum); return; }
+            if (!pageRendered[pageNum - 1]) return;
+            pageRendered[pageNum - 1] = false;
+            enqueueRender(pageNum);
         },
-
-        // 主渲染入口：renderPage 完成后调用
-        render(pageNum, container, scale) {
-            // 清除旧的译文渲染
-            container.querySelectorAll('.bi-overlay, .bi-contrast, .bi-reflow').forEach(el => el.remove());
-            const canvas = container.querySelector('canvas');
-            const textLayer = container.querySelector('.textLayer');
-            if (canvas) canvas.style.display = '';
-            if (textLayer) textLayer.style.display = '';
-
-            if (!this._on) return;
-
-            const cached = this._cache.get(pageNum);
-            if (cached && cached.status === 'done') {
-                this._renderSegments(pageNum, container, scale, cached.segments);
-            } else {
-                this._renderLoading(container);
+        render(pageNum, container) {
+            const rect = container.getBoundingClientRect();
+            const visible = viewer.getBoundingClientRect();
+            if (this._on && rect.bottom >= visible.top - 800 && rect.top <= visible.bottom + 800)
                 this._request(pageNum);
-            }
+            this._status();
         },
-
-        _renderLoading(container) {
-            const div = document.createElement('div');
-            div.className = 'page-translation';
-            div.innerHTML = '<div class="pt-loading">翻译中…</div>';
-            div.style.display = 'block';
-            container.appendChild(div);
+        _status() {
+            const node = document.getElementById('pdf-translation-status');
+            if (!node) return;
+            const cached = this._cache.get(currentPage);
+            if (!this._on) node.textContent = '当前显示原文 PDF';
+            else if (cached?.status === 'done') {
+                const r = cached.report;
+                node.textContent = '第 ' + currentPage + ' 页：已替换 ' + r.translated + '/' +
+                    r.candidates + ' 个区域' + (r.warnings.length ? '；' + r.warnings.length + ' 项待检查（保留原文）' : '；版面检查通过');
+                node.title = r.warnings.map(w => (w.id || '页面') + ': ' + w.reason).join('\n');
+            } else node.textContent = cached?.status === 'error' ? '翻译失败：' + cached.message : '正在生成中文 PDF，暂显示原文…';
         },
-
-        _renderSegments(pageNum, container, scale, segments) {
-            if (this._mode === 'overlay') this._renderOverlay(container, scale, segments);
-            else if (this._mode === 'contrast') this._renderContrast(container, segments);
-            else if (this._mode === 'reflow') this._renderReflow(container, segments);
+        retry() { this._request(currentPage, true); },
+        downloadPage() {
+            const report = this._cache.get(currentPage)?.report;
+            if (!report) { alert('请先开启翻译并等待当前页完成。'); return; }
+            this._download(report.pdf_url);
         },
-
-        // 模式1：浮层覆盖，译文定位在每段原文下方
-        _renderOverlay(container, scale, segments) {
-            const layer = document.createElement('div');
-            layer.className = 'bi-overlay';
-            for (const s of segments) {
-                const seg = document.createElement('div');
-                seg.className = 'bi-overlay-seg';
-                seg.style.top = (s.y1 * scale) + 'px';
-                seg.textContent = s.target;
-                layer.appendChild(seg);
-            }
-            container.appendChild(layer);
+        _download(url) {
+            const a = document.createElement('a');
+            a.href = url; a.download = ''; a.click();
         },
-
-        // 模式2：逐段对照块（页面底部）
-        _renderContrast(container, segments) {
-            const div = document.createElement('div');
-            div.className = 'page-translation bi-contrast';
-            div.style.display = 'block';
-            let html = '<div class="pt-label">译文</div>';
-            for (const s of segments) {
-                html += `<div class="bi-contrast-seg"><div class="bi-contrast-src">${this._esc(s.source)}</div><div class="bi-contrast-target">${this._esc(s.target)}</div></div>`;
-            }
-            div.innerHTML = html;
-            container.appendChild(div);
-        },
-
-        // 模式3：流式重排（隐藏原图，原文+译文交错）
-        _renderReflow(container, segments) {
-            const canvas = container.querySelector('canvas');
-            const textLayer = container.querySelector('.textLayer');
-            if (canvas) canvas.style.display = 'none';
-            if (textLayer) textLayer.style.display = 'none';
-            const div = document.createElement('div');
-            div.className = 'bi-reflow';
-            let html = '';
-            for (const s of segments) {
-                html += `<div class="bi-reflow-seg"><div class="bi-reflow-src">${this._esc(s.source)}</div><div class="bi-reflow-target">${this._esc(s.target)}</div></div>`;
-            }
-            div.innerHTML = html;
-            container.appendChild(div);
-        },
+        async downloadAll(button) {
+            if (!confirm('将翻译整本文档的所有页面，可能产生较多翻译服务费用。继续吗？')) return;
+            button.disabled = true;
+            try {
+                this.toggle(true);
+                let version = null, review = 0;
+                for (let p = 1; p <= pageContainers.length; p++) {
+                    this._request(p);
+                    while (['loading', 'queued'].includes(this._cache.get(p)?.status)) {
+                        if (!this._on) throw new Error('已停止整本生成');
+                        await new Promise(resolve => setTimeout(resolve, 300));
+                    }
+                    const entry = this._cache.get(p);
+                    if (entry?.status !== 'done') throw new Error('第 ' + p + ' 页失败，请重试后继续');
+                    if (version && version !== entry.report.version) throw new Error('模型配置已变化，请刷新页面重新生成');
+                    version = entry.report.version;
+                    review += entry.report.warnings.length;
+                    button.textContent = p + '/' + pageContainers.length;
+                }
+                if (review) alert('有 ' + review + ' 个区域待检查，已保留原文。下载内容与网页预览一致。');
+                this._download('/api/pdf-translation-download/' + encodeURIComponent(BOOK_ID) + '/' + version);
+            } catch (e) { alert(e.message); }
+            finally { button.disabled = false; button.textContent = '翻译并下载整本'; }
+        }
     };
     window.Bilingual = Bilingual;
 
