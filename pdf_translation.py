@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-ENGINE_VERSION = "structured-6"
+ENGINE_VERSION = "structured-7"
 PDF_LOCK = threading.RLock()  # Serialize operations in this pipeline.
 SIGNALS = re.compile(r"\b(?:VCC|VDD|VSS|GND|VIN|VOUT|IOUT|ICC|CLK|SPI|CMOS|TTL)\b|"
                      r"/?[A-Za-z][A-Za-z0-9_]*\d[A-Za-z0-9_]*|/[A-Z]+\b")
@@ -275,6 +275,7 @@ async def translate_regions(plan: dict, complete) -> tuple[dict, list[dict]]:
                 protected = {r['id']: protect(r['source']) for r in pending}
                 payload = {'table_context': context, 'items': [
                     {'id': r['id'], 'source': protected[r['id']][0], 'reference': r['source'],
+                     **({'fit_feedback': r['fit_feedback']} if 'fit_feedback' in r else {}),
                      'available_space': {'width_pt': r.get('bbox', [0, 0, 100, 20])[2] - r.get('bbox', [0, 0, 100, 20])[0],
                                          'height_pt': r.get('bbox', [0, 0, 100, 20])[3] - r.get('bbox', [0, 0, 100, 20])[1],
                                          'font_pt': r.get('font_size', 10),
@@ -288,6 +289,9 @@ async def translate_regions(plan: dict, complete) -> tuple[dict, list[dict]]:
                           'to understand token meanings; output tokens, not values. Do not invent digits. '
                           'Write month names in Chinese words, not new digits. Do not merge items. '
                           'Use short natural labels to fit available_space, but never omit substantive facts. '
+                          'When fit_feedback is present, rewrite the previous translation more compactly '
+                          'without summarizing or dropping meaning, numbers or units. Fragments next to '
+                          'native formulas must not repeat or infer the surrounding formula or units. '
                           'Return ONLY a JSON object mapping each requested item id to its translation.\n'
                           + json.dumps(payload, ensure_ascii=False))
                 try:
@@ -356,9 +360,16 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
             preferred = region['font_size']
             minimum = min(preferred, max(6, preferred * .8))
             options = None
+            # Chinese does not require spaces at Latin/CJK boundaries. Keep
+            # spaces between Latin words and numbers (e.g. "10 20") intact.
+            target = re.sub(r'(?<=[\u3400-\u9fff]) +| +(?=[\u3400-\u9fff])', '', target)
             markup = html.escape(target)
             alignment = 'center' if region['align'] == 1 else 'left'
-            css = (f'* {{font-family:sans-serif;font-size:{preferred}pt;line-height:1.05;'
+            # insert_htmlbox injects "body {margin:1px}". A universal selector
+            # does not override its specificity: those 2 pt consumed much of
+            # a dense footnote's line height even for a single Chinese glyph.
+            css = ('body {margin:0;padding:0;}'
+                   f'* {{font-family:sans-serif;font-size:{preferred}pt;line-height:1.05;'
                    f'margin:0;padding:0;text-align:{alignment};}}')
             with fitz.open() as scratch:
                 probe = scratch.new_page(width=page.rect.width, height=page.rect.height)
@@ -366,7 +377,9 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
                 if remaining >= 0:
                     options = {'css': css, 'scale_low': minimum / preferred}
             if options is None:
-                warnings.append({'id': region['id'], 'reason': '译文在可读字号下放不进原区域，保留原文。'})
+                warnings.append({'id': region['id'], 'code': 'text_does_not_fit',
+                                 'bbox': _rect(box),
+                                 'reason': '译文在可读字号下放不进原区域，保留原文。'})
                 continue
             # Redaction deletes every glyph intersecting its rectangle, not
             # just glyphs whose centers are inside it. Reject any region that
@@ -443,6 +456,32 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
         return {'page': plan['page'], 'translated': len(accepted), 'candidates': len(plan['regions']),
                 'tables': [{'rows': t['rows'], 'cols': t['cols']} for t in plan['tables']],
                 'warnings': warnings, 'engine': ENGINE_VERSION}
+
+
+async def render_with_fit_retry(pdf_path: str, plan: dict, targets: dict, destination: str, complete) -> tuple[dict, dict]:
+    """Retry only measured overflow regions, without moving neighboring PDF content.
+
+    Native measurement stays synchronous under PDF_LOCK; only the model call
+    awaits. Two bounded attempts prevent repeated charges for impossible boxes.
+    Successful translations are never sent again or discarded.
+    """
+    targets = dict(targets)
+    report = render_page(pdf_path, plan, targets, destination)
+    for _attempt in range(2):
+        failures = {w['id']: w for w in report['warnings'] if w.get('code') == 'text_does_not_fit'}
+        if not failures:
+            break
+        retry_regions = [{**r, 'bbox': failures[r['id']]['bbox'], 'fit_feedback': {
+            'previous_translation': targets[r['id']],
+            'reason': 'Measured PDF typesetting overflow at readable font size; use a shorter equivalent translation.'}}
+            for r in plan['regions'] if r['id'] in failures]
+        revised, _warnings = await translate_regions({**plan, 'regions': retry_regions}, complete)
+        changed = {key: value for key, value in revised.items() if value != targets.get(key)}
+        if not changed:
+            break
+        targets.update(changed)
+        report = render_page(pdf_path, plan, targets, destination)
+    return report, targets
 
 
 def fingerprint(path: str, provider_signature: str) -> str:

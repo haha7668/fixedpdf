@@ -47,15 +47,19 @@ async def main():
                               'provider': provider})
             return response, provider
         new_targets, warnings = await translation.translate_regions(remaining, complete)
-        if args.trace:
-            (output / f'page-{number}.responses.json').write_text(
-                json.dumps(responses, ensure_ascii=False, indent=2), encoding='utf-8')
         targets.update(new_targets)
         plan['warnings'].extend(warnings)
         destination = output / f'page-{number}-zh-CN.pdf'
         (output / f'page-{number}.pending.json').write_text(
             json.dumps({'plan': plan, 'targets': targets}, ensure_ascii=False, indent=2), encoding='utf-8')
-        report = translation.render_page(str(source), plan, targets, str(destination))
+        report, targets = await translation.render_with_fit_retry(str(source), plan, targets, str(destination), complete)
+        if args.trace:
+            (output / f'page-{number}.responses.json').write_text(
+                json.dumps(responses, ensure_ascii=False, indent=2), encoding='utf-8')
+        # Fit retries may change translations: cache the final, measured text,
+        # not the preflight targets saved for crash recovery above.
+        (output / f'page-{number}.pending.json').write_text(
+            json.dumps({'plan': plan, 'targets': targets}, ensure_ascii=False, indent=2), encoding='utf-8')
         (output / f'page-{number}.json').write_text(
             json.dumps({'report': report, 'plan': plan, 'targets': targets}, ensure_ascii=False, indent=2),
             encoding='utf-8')

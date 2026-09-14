@@ -2113,7 +2113,8 @@ async def generate_pdf_translation(book_id: str, request: Request):
         targets, warnings = await pdf_translation.translate_regions(plan, _ai_complete)
         plan['warnings'].extend(warnings)
         try:
-            report = pdf_translation.render_page(str(source), plan, targets, str(artifact))
+            report, targets = await pdf_translation.render_with_fit_retry(
+                str(source), plan, targets, str(artifact), _ai_complete)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         report.update(version=version, status='review' if report['warnings'] else 'ready',

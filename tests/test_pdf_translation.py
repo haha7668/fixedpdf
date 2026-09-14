@@ -62,6 +62,76 @@ def test_unfit_translation_keeps_original(source, tmp_path):
         assert 'Code' in doc[0].get_text()
 
 
+def test_dense_footnote_has_no_hidden_html_margin(tmp_path):
+    path, output = tmp_path / 'footnote.pdf', tmp_path / 'footnote-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=300, height=400)
+        page.insert_text((40, 300), 'Note 4:', fontsize=5.5)
+        page.insert_text((65, 300), 'VCC = 5 V', fontsize=5.5)
+        span = page.get_text('dict')['blocks'][0]['lines'][0]['spans'][0]
+        doc.save(path)
+    region = translation._region('note', [span], (40, 294, 60, 300.5), 'cell')
+    plan = {'page': 1, 'regions': [region], 'tables': [], 'warnings': []}
+    report = translation.render_page(str(path), plan, {'note': '注 4：'}, str(output))
+    assert report['translated'] == 1 and not report['warnings']
+    with fitz.open(output) as doc, fitz.open(path) as original:
+        assert 'Note' not in doc[0].get_text()
+        assert '注4：' in doc[0].get_text().replace(' ', '')
+        assert doc[0].search_for('VCC')[0] == original[0].search_for('VCC')[0]
+        sizes = [s['size'] for b in doc[0].get_text('dict')['blocks']
+                 for line in b.get('lines', []) for s in line['spans'] if '注' in s['text']]
+        assert sizes and min(sizes) >= 5.49
+
+
+@pytest.mark.asyncio
+async def test_measured_overflow_retries_only_failed_regions(source, tmp_path):
+    plan = translation.analyze_page(str(source), 1)
+    targets = {'t0r0c0': '完整内容' * 100, 't0r0c1': '说明'}
+    async def answer(prompt, **kwargs):
+        payload = json.loads(prompt.split('\n', 1)[1])
+        assert [r['id'] for r in payload['items']] == ['t0r0c0']
+        assert payload['items'][0]['fit_feedback']['previous_translation'] == targets['t0r0c0']
+        return '{"t0r0c0":"编号"}', 'mock'
+    complete = AsyncMock(side_effect=answer)
+    report, updated = await translation.render_with_fit_retry(
+        str(source), plan, targets, str(tmp_path / 'fitted.pdf'), complete)
+    assert report['translated'] == 2 and not report['warnings']
+    assert updated == {'t0r0c0': '编号', 't0r0c1': '说明'}
+    assert complete.await_count == 1
+    assert targets['t0r0c0'] == '完整内容' * 100  # Caller input is not mutated.
+
+
+@pytest.mark.asyncio
+async def test_fit_retry_rejects_changed_numbers(source, tmp_path):
+    plan = translation.analyze_page(str(source), 1)
+    targets = {'t0r1c1': '电源电压 VCC = 5 V ' + '完整内容' * 100}
+    # Looks short enough but replaces the protected 5 with 6.
+    complete = AsyncMock(return_value=('{"t0r1c1":"电源电压 __KEEP0__ = 6 V"}', 'mock'))
+    report, updated = await translation.render_with_fit_retry(
+        str(source), plan, targets, str(tmp_path / 'invalid.pdf'), complete)
+    assert report['translated'] == 0 and report['warnings'][0]['code'] == 'text_does_not_fit'
+    assert updated == targets and complete.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_fit_retry_is_bounded(source, tmp_path):
+    plan = translation.analyze_page(str(source), 1)
+    complete = AsyncMock(side_effect=[(json.dumps({'t0r0c0': '过长译文' * i}), 'mock') for i in (99, 98)])
+    report, _ = await translation.render_with_fit_retry(
+        str(source), plan, {'t0r0c0': '完整内容' * 100}, str(tmp_path / 'bounded.pdf'), complete)
+    assert report['translated'] == 0 and complete.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_successful_page_never_requests_fit_retry(source, tmp_path):
+    complete = AsyncMock()
+    plan = translation.analyze_page(str(source), 1)
+    report, _ = await translation.render_with_fit_retry(
+        str(source), plan, {'t0r0c0': '编号'}, str(tmp_path / 'ready.pdf'), complete)
+    assert report['translated'] == 1
+    complete.assert_not_called()
+
+
 def test_tokens_roundtrip():
     source = 'Data output IO1 at -2.5 V and 40 mA, W25Q64BV /CS'
     masked, tokens = translation.protect(source)
@@ -120,6 +190,22 @@ def test_api_preview_export_cache_and_validation(source, monkeypatch):
 
 def test_selected_model_wins():
     assert server._pick_model({'model': 'chosen', 'default_model': 'default'}) == 'chosen'
+
+
+def test_api_stores_final_fit_retry_translations(source, monkeypatch):
+    monkeypatch.setattr(server, 'BOOKS_DIR', str(source.parent.parent))
+    complete = AsyncMock(side_effect=[({'t0r0c0': '过长译文' * 100}, []), ({'t0r0c0': '编号'}, [])])
+    monkeypatch.setattr(translation, 'translate_regions', complete)
+    with TestClient(server.app) as client:
+        response = client.post('/api/pdf-translation/sample', json={'page': 1})
+        assert response.status_code == 200, response.text
+        report = response.json()
+        assert report['translated'] == 1 and not report['warnings']
+        audit = source.parent / '.translated' / report['version'] / 'page-1.audit.json'
+        assert json.loads(audit.read_text(encoding='utf-8'))['targets']['t0r0c0'] == '编号'
+        assert complete.await_count == 2
+        client.post('/api/pdf-translation/sample', json={'page': 1})
+        assert complete.await_count == 2
 
 
 def test_cache_fingerprint_model_change(source):
