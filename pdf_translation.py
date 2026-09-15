@@ -14,12 +14,14 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-ENGINE_VERSION = "structured-7"
+ENGINE_VERSION = "structured-10"
 PDF_LOCK = threading.RLock()  # Serialize operations in this pipeline.
 SIGNALS = re.compile(r"\b(?:VCC|VDD|VSS|GND|VIN|VOUT|IOUT|ICC|CLK|SPI|CMOS|TTL)\b|"
                      r"/?[A-Za-z][A-Za-z0-9_]*\d[A-Za-z0-9_]*|/[A-Z]+\b")
 NUMBERS = re.compile(r"[-+±−]?\d+(?:\.\d+)?")
 UNITS = re.compile(r"\b(?:[munpkM]?A|[munpkM]?V|[munpkM]?W|[munpkM]?F|[munp]?s|Hz|MHz|GHz)\b")
+INLINE_MARKS = '\u00ae\u00a9\u2122'
+IDENTIFIER_HEADERS = {'symbol', 'code', 'pin name', 'signal name', 'port name', 'signal', 'port'}
 
 
 def needs_translation(text: str) -> bool:
@@ -68,6 +70,46 @@ def _region(identifier: str, spans: list[dict], box, kind: str, source: str = ""
             'align': 0}
 
 
+def _line_structure(line: dict, spans: list[dict]) -> dict:
+    body = [s for s in spans if s['text'].strip() not in INLINE_MARKS] or spans
+    main = max(body, key=lambda s: len(s['text']))
+    return {'block': line['block'], 'bbox': _rect(_union(spans)),
+            'baseline': main['origin'][1], 'font': main['font'], 'font_size': main['size']}
+
+
+def _continues_paragraph(previous: dict, current: dict, lines: list[dict], rules: list) -> bool:
+    """Use native block membership, baselines and separators, including short tails."""
+    last, first = previous['lines'][-1], current['lines'][0]
+    left, right = fitz.Rect(last['bbox']), fitz.Rect(first['bbox'])
+    size = first['font_size']
+    pitch = first['baseline'] - last['baseline']
+    if (abs(left.x0 - right.x0) > size * .2 or abs(last['font_size'] - size) > .5
+            or last['font'] != first['font'] or not size * .8 <= pitch <= size * 1.55):
+        return False
+    if (last['block'] != first['block']
+            and (left.width < size * 10 or re.search(r'[.!?:]\s*$', previous['source']))):
+        return False
+    # A native block can cover multiple columns. Never merge across another
+    # text line or a horizontal rule, even when its block ID matches.
+    for line in lines:
+        ss = line['spans']
+        baseline = max(ss, key=lambda s: len(s['text']))['origin'][1]
+        box = _union(ss)
+        if (last['baseline'] + .2 < baseline < first['baseline'] - .2
+                and box.x0 < min(left.x1, right.x1) and box.x1 > left.x0):
+            return False
+    for _, start, end in rules:
+        if (abs(start.y - end.y) < .1 and last['baseline'] < start.y < first['baseline']
+                and min(start.x, end.x) < max(left.x1, right.x1) and max(start.x, end.x) > left.x0):
+            return False
+    return True
+
+
+def _translation_markup(target: str) -> str:
+    escaped = html.escape(target)
+    return re.sub(f'[{INLINE_MARKS}]', r'<sup>\g<0></sup>', escaped)
+
+
 def analyze_page(pdf_path: str, page_number: int) -> dict:
     """Recover cell geometry and prose regions without flattening table rows."""
     with PDF_LOCK, fitz.open(pdf_path) as doc:
@@ -76,8 +118,9 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
         page = doc[page_number - 1]
         blocks = page.get_text('rawdict')['blocks']
         lines = []
-        for block in blocks:
+        for bi, block in enumerate(blocks):
             for line in block.get('lines', []):
+                line = {**line, 'block': bi}
                 pieces = []
                 for span in line['spans']:
                     text = ''.join(c['c'] for c in span['chars']).rstrip()
@@ -148,7 +191,7 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
                            'bbox': _rect(grid_box), 'source': [data[ri] for ri in sorted(grid_rows)]})
             first_row = min(grid_rows)
             symbol_columns = {ci for ci, value in enumerate(data[first_row])
-                              if (value or '').strip().lower() in ('symbol', 'code', 'pin name')}
+                              if ' '.join((value or '').lower().split()) in IDENTIFIER_HEADERS}
             seen = set()
             for ri, row in enumerate(table.rows):
                 if ri not in grid_rows:
@@ -171,7 +214,11 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
                         continue  # Native formula with subscripts, not prose.
                     # A span crossing a rule is not a trustworthy cell assignment.
                     if any(s['bbox'][0] < box.x0 - 1 or s['bbox'][2] > box.x1 + 1 for s in cell_spans):
-                        warnings.append({'id': f't{ti}r{ri}c{ci}', 'reason': '文字跨越单元格边界，保留原文。'})
+                        region = _region(f't{ti}r{ri}c{ci}', cell_spans, box, 'cell', text)
+                        region.update(table=f't{ti}', placement='deferred')
+                        regions.append(region)
+                        warnings.append({'id': region['id'], 'code': 'uncertain_cell',
+                                         'reason': '文字跨越单元格边界，译文单独列出，原页保留原文。'})
                         continue
                     padded = fitz.Rect(box.x0 + 2, box.y0 + 1, box.x1 - 2, box.y1 - 1)
                     region = _region(f't{ti}r{ri}c{ci}', cell_spans, padded, 'cell', text)
@@ -184,6 +231,7 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
         # span independent columns. Merge only aligned consecutive prose.
         prose = []
         seen_ink = set()
+        rules = [item for drawing in page.get_drawings() for item in drawing['items'] if item[0] == 'l']
         for li, line in enumerate(lines):
             ss = [s for s in line['spans'] if s['text'].strip()]
             if not ss:
@@ -196,13 +244,29 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
                 continue
             seen_ink.add(signature)
             text = ' '.join(s['text'].strip() for s in ss)
+            sizes = [s['size'] for s in ss]
+            structure = _line_structure(line, ss)
             if not needs_translation(text):
+                # Keep tightly attached technical identifier lines with the
+                # preceding translated heading. Otherwise the untouched line's
+                # glyph boxes can overlap the heading erase boxes and block a
+                # safe replacement.
+                for prev in reversed(prose):
+                    pb = fitz.Rect(prev['bbox'])
+                    if (prev['font_size'] >= 18
+                            and _continues_paragraph(prev, {'lines': [structure]}, lines, rules)):
+                        prev['source'] += '\n' + text
+                        prev['bbox'] = _rect(pb | box)
+                        continuation = _region('continuation', ss, box, 'prose')
+                        prev['ink'].extend(continuation['ink'])
+                        prev['lines'].append(structure)
+                        break
                 continue
             if tuple(line.get('dir', (1, 0))) != (1, 0) or '\ufffd' in text:
                 warnings.append({'id': f'p{li}', 'reason': '文字方向或编码不可靠，保留原文。'})
                 continue
-            sizes = [s['size'] for s in ss]
-            if min(sizes) < max(sizes) * .9 or any('§' in s['text'] for s in ss):
+            body_sizes = [s['size'] for s in ss if s['text'].strip() not in INLINE_MARKS] or sizes
+            if min(body_sizes) < max(body_sizes) * .9 or any('§' in s['text'] for s in ss):
                 # Mixed-baseline mathematical text cannot safely be recreated
                 # from decoded strings (custom Symbol fonts often decode '='
                 # as 'e'). Translate only natural-language spans in place.
@@ -220,30 +284,29 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
                     regions.append(_region(f'p{li}s{si}', [part], part['bbox'], 'prose'))
                 continue
             region = _region(f'p{li}', ss, box, 'prose')
-            # Avoid merging distinct labels: continuation must share font,
-            # left edge and fit a normal line pitch.
+            region.update(lines=[structure], font_size=structure['font_size'])
             merged = False
             for prev in reversed(prose):
                 pb = fitz.Rect(prev['bbox'])
-                if (abs(pb.x0 - box.x0) < 2 and 0 <= box.y0 - pb.y1 < 3
-                        and abs(prev['font_size'] - region['font_size']) < .5
-                        and pb.width > 100 and box.width > 100):
+                if _continues_paragraph(prev, region, lines, rules):
                     prev['source'] += '\n' + text
                     prev['bbox'] = _rect(pb | box)
                     prev['ink'].extend(region['ink'])
+                    prev['lines'].append(structure)
                     merged = True
                     break
             if merged:
                 continue
             prose.append(region)
         regions.extend(prose)
+        regions.sort(key=lambda r: (r['bbox'][1], r['bbox'][0]))
         return {'page': page_number, 'regions': regions, 'tables': tables, 'warnings': warnings}
 
 
 def protect(text: str) -> tuple[str, dict]:
     """Replace numbers and technical identifiers with exact round-trip tokens."""
     tokens = {}
-    pattern = re.compile(f'(?:{SIGNALS.pattern})|(?:{NUMBERS.pattern})')
+    pattern = re.compile(f'(?:{SIGNALS.pattern})|(?:{NUMBERS.pattern})|[{INLINE_MARKS}]')
     def replace(match):
         key = f'__KEEP{len(tokens)}__'
         tokens[key] = match.group()
@@ -271,11 +334,13 @@ async def translate_regions(plan: dict, complete) -> tuple[dict, list[dict]]:
         context = next((t['source'] for t in plan['tables'] if t['id'] == group), None)
         for start in range(0, len(regions), 24):
             pending = regions[start:start + 24]
+            feedback = {}
             for _attempt in range(2):
                 protected = {r['id']: protect(r['source']) for r in pending}
                 payload = {'table_context': context, 'items': [
                     {'id': r['id'], 'source': protected[r['id']][0], 'reference': r['source'],
                      **({'fit_feedback': r['fit_feedback']} if 'fit_feedback' in r else {}),
+                     **({'validation_feedback': feedback[r['id']]} if r['id'] in feedback else {}),
                      'available_space': {'width_pt': r.get('bbox', [0, 0, 100, 20])[2] - r.get('bbox', [0, 0, 100, 20])[0],
                                          'height_pt': r.get('bbox', [0, 0, 100, 20])[3] - r.get('bbox', [0, 0, 100, 20])[1],
                                          'font_pt': r.get('font_size', 10),
@@ -288,6 +353,7 @@ async def translate_regions(plan: dict, complete) -> tuple[dict, list[dict]]:
                           'Keep every __KEEPn__ token exactly once within its own item. Use reference '
                           'to understand token meanings; output tokens, not values. Do not invent digits. '
                           'Write month names in Chinese words, not new digits. Do not merge items. '
+                          'Correct any validation_feedback from a prior rejected response. '
                           'Use short natural labels to fit available_space, but never omit substantive facts. '
                           'When fit_feedback is present, rewrite the previous translation more compactly '
                           'without summarizing or dropping meaning, numbers or units. Fragments next to '
@@ -296,12 +362,25 @@ async def translate_regions(plan: dict, complete) -> tuple[dict, list[dict]]:
                           + json.dumps(payload, ensure_ascii=False))
                 try:
                     raw, _ = await complete(prompt, temperature=0.1, max_tokens=8192, task='translate')
+                except Exception as exc:
+                    reason = '翻译服务暂不可用，请检查服务配置后重试。'
+                    detail = str(exc).lower()
+                    if 'http 402' in detail or 'insufficient balance' in detail:
+                        reason = '翻译服务余额不足，请充值或切换服务商后重试。'
+                    elif 'http 401' in detail or 'http 403' in detail:
+                        reason = '翻译服务认证失败，请检查 API Key 和访问权限。'
+                    remaining = [r for r in plan['regions'] if r['id'] not in targets]
+                    return targets, [{'id': r['id'], 'code': 'provider_unavailable', 'reason': reason}
+                                     for r in remaining]
+                try:
                     raw = re.sub(r'^`{3}(?:json)?\s*|\s*`{3}$', '', raw.strip())
                     result = json.loads(raw)
                     if not isinstance(result, dict) or set(result) - set(protected):
                         raise ValueError('unexpected translation IDs')
                 except Exception:
                     result = {}
+                    feedback.update({r['id']: 'No valid JSON response for this item; return the requested ID.'
+                                     for r in pending})
                 failed = []
                 for region in pending:
                     try:
@@ -311,12 +390,16 @@ async def translate_regions(plan: dict, complete) -> tuple[dict, list[dict]]:
                         if Counter(NUMBERS.findall(translated)) != Counter(NUMBERS.findall(region['source'])):
                             raise ValueError('numbers changed')
                         targets[region['id']] = translated
-                    except (KeyError, ValueError, TypeError, AttributeError):
+                    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+                        feedback[region['id']] = (str(exc) if isinstance(exc, ValueError)
+                                                  else 'Missing item or non-string translation')
                         failed.append(region)
                 pending = failed
                 if not pending:
                     break
-            warnings.extend({'id': r['id'], 'reason': '译文结构、数字或保护标记校验失败，保留原文，可重试。'}
+            warnings.extend({'id': r['id'], 'code': 'translation_invalid',
+                             'reason': '译文未通过完整性校验，保留原文，可重试。',
+                             'validation': feedback.get(r['id'], 'Invalid response')}
                             for r in pending)
     return targets, warnings
 
@@ -333,7 +416,7 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
         rules = [item for drawing in page.get_drawings() for item in drawing['items'] if item[0] == 'l']
         for region in plan['regions']:
             target = targets.get(region['id'])
-            if not target:
+            if not target or region.get('placement') == 'deferred':
                 continue
             box = fitz.Rect(region['bbox'])
             if region['kind'] == 'prose':
@@ -363,14 +446,15 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
             # Chinese does not require spaces at Latin/CJK boundaries. Keep
             # spaces between Latin words and numbers (e.g. "10 20") intact.
             target = re.sub(r'(?<=[\u3400-\u9fff]) +| +(?=[\u3400-\u9fff])', '', target)
-            markup = html.escape(target)
+            markup = _translation_markup(target)
             alignment = 'center' if region['align'] == 1 else 'left'
             # insert_htmlbox injects "body {margin:1px}". A universal selector
             # does not override its specificity: those 2 pt consumed much of
             # a dense footnote's line height even for a single Chinese glyph.
             css = ('body {margin:0;padding:0;}'
                    f'* {{font-family:sans-serif;font-size:{preferred}pt;line-height:1.05;'
-                   f'margin:0;padding:0;text-align:{alignment};}}')
+                   f'margin:0;padding:0;text-align:{alignment};}}'
+                   'sup {font-size:70%;vertical-align:super;}')
             with fitz.open() as scratch:
                 probe = scratch.new_page(width=page.rect.width, height=page.rect.height)
                 remaining, scale = probe.insert_htmlbox(box, markup, css=css, scale_low=minimum / preferred)
@@ -399,7 +483,8 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
                                     and any(b.intersects(cb) for b in erase_boxes)):
                                 collision = True
             if collision:
-                warnings.append({'id': region['id'], 'reason': '替换区域接触相邻字符，保留原文以保护上下标。'})
+                warnings.append({'id': region['id'], 'code': 'adjacent_glyph',
+                                 'reason': '替换区域接触相邻字符，译文单独列出，原页保留原文。'})
                 continue
             accepted.append((render_region, target, options))
         # Verify every untouched glyph survives, including neighboring units
@@ -428,7 +513,7 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
         if accepted:
             page.apply_redactions(images=0, graphics=0, text=0)
         for region, target, options in accepted:
-            remaining, scale = page.insert_htmlbox(fitz.Rect(region['bbox']), html.escape(target), **options)
+            remaining, scale = page.insert_htmlbox(fitz.Rect(region['bbox']), _translation_markup(target), **options)
             if remaining < 0:
                 raise ValueError('Measured text failed to render')
         # Structural checks run on the actual PDF, not an HTML mock-up.
@@ -453,7 +538,18 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
         temporary = out.with_suffix('.tmp.pdf')
         result.save(temporary, garbage=4, deflate=True)
         temporary.replace(out)
+        placed = {r['id'] for r, _, _ in accepted}
+        reasons = {w['id']: w['reason'] for w in warnings if 'id' in w}
+        details = [{'id': r['id'], 'source': r['source'], 'translation': targets.get(r['id'], ''),
+                    'status': 'placed' if r['id'] in placed else 'unplaced' if targets.get(r['id']) else 'pending',
+                    'reason': reasons.get(r['id'], '' if r['id'] in placed else
+                                          '原页保留原文，译文单独列出。' if targets.get(r['id']) else '译文尚未生成。')}
+                   for r in plan['regions']]
+        translated_count = sum(bool(d['translation']) for d in details)
         return {'page': plan['page'], 'translated': len(accepted), 'candidates': len(plan['regions']),
+                'translation_count': translated_count, 'placement_count': len(accepted),
+                'pending_count': len(details) - translated_count,
+                'unplaced_count': translated_count - len(accepted), 'details': details,
                 'tables': [{'rows': t['rows'], 'cols': t['cols']} for t in plan['tables']],
                 'warnings': warnings, 'engine': ENGINE_VERSION}
 
@@ -475,7 +571,11 @@ async def render_with_fit_retry(pdf_path: str, plan: dict, targets: dict, destin
             'previous_translation': targets[r['id']],
             'reason': 'Measured PDF typesetting overflow at readable font size; use a shorter equivalent translation.'}}
             for r in plan['regions'] if r['id'] in failures]
-        revised, _warnings = await translate_regions({**plan, 'regions': retry_regions}, complete)
+        revised, retry_warnings = await translate_regions({**plan, 'regions': retry_regions}, complete)
+        service_warnings = [w for w in retry_warnings if w.get('code') == 'provider_unavailable']
+        if service_warnings:
+            report['warnings'].extend(service_warnings)
+            break
         changed = {key: value for key, value in revised.items() if value != targets.get(key)}
         if not changed:
             break

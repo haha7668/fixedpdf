@@ -333,6 +333,17 @@
 
         /* --- Settings Panel --- */
         #settings-panel { position: fixed; top: 80px; width: 280px; background: color-mix(in srgb, var(--surface) 98%, transparent); backdrop-filter: blur(20px); border: 1px solid var(--outline); border-radius: 20px; padding: 18px; box-shadow: 0 25px 60px rgba(0,0,0,0.15); z-index: 3000; display: none; }
+        #translation-details { margin: auto; width: min(760px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); border: 1px solid var(--outline); border-radius: 8px; background: var(--surface); color: var(--on-surface); padding: 0; overflow: auto; }
+        #translation-details::backdrop { background: rgba(0,0,0,.35); }
+        .translation-details-header { position: sticky; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; background: var(--surface); border-bottom: 1px solid var(--outline); }
+        .translation-details-header h2 { font-size: 1rem; }
+        .translation-details-header button { width: 32px; height: 32px; font-size: 1rem; }
+        #translation-details-body { padding: 0 18px; overflow-wrap: anywhere; }
+        .translation-detail { padding: 16px 0; border-bottom: 1px solid var(--outline); }
+        .translation-detail:last-child { border-bottom: 0; }
+        .translation-detail p { white-space: pre-wrap; font-size: .9rem; line-height: 1.65; margin-top: 8px; }
+        .translation-detail .translation-source { color: var(--secondary); font-size: .8rem; }
+        .translation-detail .translation-state { font-size: .75rem; font-weight: 600; }
         #sidebar.collapsed ~ #settings-panel { left: 70px; }
         #sidebar:not(.collapsed) ~ #settings-panel { left: calc(var(--sidebar-width) + 70px); }
         .setting-section { margin-bottom: 18px; }
@@ -609,6 +620,13 @@
     </div>
 
     <!-- Settings panel -->
+    <dialog id="translation-details" aria-labelledby="translation-details-title">
+        <div class="translation-details-header">
+            <h2 id="translation-details-title">本页译文</h2>
+            <form method="dialog"><button class="icon-btn" aria-label="关闭译文" title="关闭译文">&#10005;</button></form>
+        </div>
+        <div id="translation-details-body"></div>
+    </dialog>
     <div id="settings-panel">
         <div class="setting-section">
             <div class="setting-label" data-i18n="Theme">Theme</div>
@@ -628,10 +646,10 @@
                 <div class="setting-label" style="margin-bottom:0">中文 PDF（保留版式）</div>
                 <div class="toggle-switch"><input type="checkbox" id="toggle-bilingual"><span class="toggle-track"></span></div>
             </label>
-            <div class="ai-provider-hint">按真实单元格翻译，预览与下载使用同一份 PDF。无法可靠替换的区域保留原文。</div>
             <div id="pdf-translation-status" class="ai-provider-hint" role="status"></div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
                 <button onclick="Bilingual.retry()">重试本页</button>
+                <button id="translation-details-button" onclick="Bilingual.showDetails()" disabled>本页译文</button>
                 <button onclick="Bilingual.downloadPage()">下载本页</button>
                 <button onclick="Bilingual.downloadAll(this)">翻译并下载整本</button>
             </div>
@@ -2754,7 +2772,7 @@
 
     /* ========== Structured Chinese PDF: preview equals export ========== */
     const Bilingual = {
-        _on: false, _cache: new Map(), _queue: [], _active: 0,
+        _on: false, _cache: new Map(), _queue: [], _active: 0, _blockedReason: '',
         _pending: new Set(), _observer: null, MAX_CONCURRENT: 2,
         init() {
             try { this._on = localStorage.getItem('pdf_bilingual') === '1'; } catch {}
@@ -2799,20 +2817,26 @@
         _pump() {
             while (this._on && this._active < this.MAX_CONCURRENT && this._queue.length) {
                 const item = this._queue.shift();
-                this._start(item.pageNum, item.force);
+                const cacheOnly = Boolean(this._blockedReason);
+                this._start(item.pageNum, cacheOnly ? false : item.force, cacheOnly);
             }
         },
-        async _start(pageNum, force) {
+        async _start(pageNum, force, cacheOnly = false) {
             this._active++;
             this._cache.set(pageNum, { status: 'loading' });
             this._status();
             try {
                 const resp = await fetch('/api/pdf-translation/' + encodeURIComponent(BOOK_ID), {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ page: pageNum, force })
+                    body: JSON.stringify({ page: pageNum, force, cache_only: cacheOnly })
                 });
                 const report = await resp.json();
-                if (!resp.ok) throw new Error(report.detail || '生成失败');
+                if (!resp.ok) throw new Error(cacheOnly && resp.status === 404
+                    ? this._blockedReason + ' 本页尚无已生成的译文。' : report.detail || '生成失败');
+                const serviceFailure = report.warnings.find(w => w.code === 'provider_unavailable');
+                if (serviceFailure) {
+                    this._blockedReason = serviceFailure.reason;
+                }
                 const doc = await getDocument(report.pdf_url + '?v=' + Date.now()).promise;
                 this._cache.set(pageNum, { status: 'done', doc, report });
                 this._rerenderPage(pageNum);
@@ -2841,15 +2865,54 @@
             const node = document.getElementById('pdf-translation-status');
             if (!node) return;
             const cached = this._cache.get(currentPage);
+            document.getElementById('translation-details-button').disabled = !this._on || !cached?.report;
+            node.title = '';
             if (!this._on) node.textContent = '当前显示原文 PDF';
             else if (cached?.status === 'done') {
                 const r = cached.report;
-                node.textContent = '第 ' + currentPage + ' 页：已替换 ' + r.translated + '/' +
-                    r.candidates + ' 个区域' + (r.warnings.length ? '；' + r.warnings.length + ' 项待检查（保留原文）' : '；版面检查通过');
+                node.textContent = '第 ' + currentPage + ' 页：已生成译文 ' + r.translation_count + '/' +
+                    r.candidates + '；已排入原页 ' + r.placement_count + '/' + r.candidates +
+                    (r.unplaced_count ? '；' + r.unplaced_count + ' 项译文单独列出' : '') +
+                    (r.pending_count ? '；' + r.pending_count + ' 项待翻译' : '') +
+                    (r.warnings.length ? '；' + r.warnings.length + ' 项待检查' : '');
                 node.title = r.warnings.map(w => (w.id || '页面') + ': ' + w.reason).join('\n');
+                const serviceFailure = r.warnings.find(w => w.code === 'provider_unavailable');
+                if (serviceFailure) node.textContent += '；' + serviceFailure.reason;
             } else node.textContent = cached?.status === 'error' ? '翻译失败：' + cached.message : '正在生成中文 PDF，暂显示原文…';
         },
-        retry() { this._request(currentPage, true); },
+        showDetails() {
+            const report = this._cache.get(currentPage)?.report;
+            if (!report) return;
+            const dialog = document.getElementById('translation-details');
+            document.getElementById('translation-details-title').textContent = '第 ' + currentPage + ' 页译文';
+            const body = document.getElementById('translation-details-body');
+            body.replaceChildren();
+            const states = { placed: '已排入原页', unplaced: '译文单独列出', pending: '待翻译' };
+            for (const item of report.details || []) {
+                const section = document.createElement('section');
+                section.className = 'translation-detail';
+                for (const [className, value] of [
+                    ['translation-state', states[item.status] + (item.reason ? ' · ' + item.reason : '')],
+                    ['translation-source', item.source],
+                    ['translation-target', item.translation || '暂无通过校验的译文']
+                ]) {
+                    const paragraph = document.createElement('p');
+                    paragraph.className = className;
+                    paragraph.textContent = value;
+                    section.append(paragraph);
+                }
+                body.append(section);
+            }
+            const regionalIds = new Set((report.details || []).map(item => item.id));
+            for (const warning of report.warnings || []) {
+                if (regionalIds.has(warning.id)) continue;
+                const paragraph = document.createElement('p');
+                paragraph.textContent = warning.reason;
+                body.append(paragraph);
+            }
+            dialog.showModal();
+        },
+        retry() { this._blockedReason = ''; this._request(currentPage, true); },
         downloadPage() {
             const report = this._cache.get(currentPage)?.report;
             if (!report) { alert('请先开启翻译并等待当前页完成。'); return; }

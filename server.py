@@ -2092,8 +2092,11 @@ async def generate_pdf_translation(book_id: str, request: Request):
         body = await request.json()
     except ValueError as exc:
         raise HTTPException(400, 'Invalid JSON body') from exc
-    if not isinstance(body, dict) or type(body.get('force', False)) is not bool:
-        raise HTTPException(400, 'Expected an object and boolean force')
+    if (not isinstance(body, dict) or type(body.get('force', False)) is not bool
+            or type(body.get('cache_only', False)) is not bool):
+        raise HTTPException(400, 'Expected an object and boolean force/cache_only')
+    if body.get('force') and body.get('cache_only'):
+        raise HTTPException(400, 'force and cache_only cannot both be true')
     page_number = body.get('page')
     if type(page_number) is not int or page_number < 1:
         raise HTTPException(400, 'page must be a positive integer')
@@ -2101,26 +2104,38 @@ async def generate_pdf_translation(book_id: str, request: Request):
     folder = source.parent / '.translated' / version
     artifact = folder / f'page-{page_number}.pdf'
     metadata = folder / f'page-{page_number}.json'
+    audit = folder / f'page-{page_number}.audit.json'
     key = str(artifact)
     lock = _pdf_generation_locks.setdefault(key, asyncio.Lock())
     async with lock:
         if artifact.is_file() and metadata.is_file() and not body.get('force', False):
             return json.loads(metadata.read_text(encoding='utf-8'))
+        if body.get('cache_only'):
+            raise HTTPException(404, '本页尚无已生成的译文。')
         try:
             plan = pdf_translation.analyze_page(str(source), page_number)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        targets, warnings = await pdf_translation.translate_regions(plan, _ai_complete)
+        targets = {}
+        if audit.is_file():
+            previous = json.loads(audit.read_text(encoding='utf-8'))
+            sources = {r['id']: r['source'] for r in previous['plan']['regions']}
+            targets = {r['id']: previous['targets'][r['id']] for r in plan['regions']
+                       if sources.get(r['id']) == r['source'] and previous['targets'].get(r['id'])}
+        pending = [r for r in plan['regions'] if r['id'] not in targets]
+        new_targets, warnings = await pdf_translation.translate_regions({**plan, 'regions': pending}, _ai_complete)
+        targets.update(new_targets)
         plan['warnings'].extend(warnings)
         try:
             report, targets = await pdf_translation.render_with_fit_retry(
                 str(source), plan, targets, str(artifact), _ai_complete)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-        report.update(version=version, status='review' if report['warnings'] else 'ready',
+        report.update(version=version,
+                      status='review' if report['warnings'] or report['pending_count'] or report['unplaced_count']
+                      else 'ready',
                       pdf_url=f'/api/pdf-translation-file/{quote(book_id, safe="")}/{version}/{page_number}')
         # Store auditable IDs and translations locally, never provider credentials.
-        audit = folder / f'page-{page_number}.audit.json'
         audit.write_text(json.dumps({'plan': plan, 'targets': targets}, ensure_ascii=False), encoding='utf-8')
         temporary = metadata.with_suffix('.tmp')
         temporary.write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')

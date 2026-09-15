@@ -83,6 +83,169 @@ def test_dense_footnote_has_no_hidden_html_margin(tmp_path):
         assert sizes and min(sizes) >= 5.49
 
 
+def test_tight_multiline_prose_merges_before_collision_check(tmp_path):
+    path, output = tmp_path / 'tight.pdf', tmp_path / 'tight-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=360, height=240)
+        page.insert_text((40, 100), 'First technical sentence overlaps', fontsize=10)
+        page.insert_text((40, 110), 'Second technical sentence below', fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    assert len(plan['regions']) == 1
+    assert plan['regions'][0]['source'] == 'First technical sentence overlaps\nSecond technical sentence below'
+    report = translation.render_page(
+        str(path), plan, {plan['regions'][0]['id']: '第一行技术说明\n第二行技术说明'}, str(output))
+    assert report['translated'] == 1
+    assert not report['warnings']
+    with fitz.open(output) as doc:
+        text = doc[0].get_text()
+        assert 'First technical sentence' not in text
+        assert '技术说明' in text.replace(' ', '')
+
+
+def test_heading_keeps_attached_technical_identifier_line(tmp_path):
+    path, output = tmp_path / 'heading.pdf', tmp_path / 'heading-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=500, height=300)
+        page.insert_text((50, 70), 'AXI Memory Mapped', fontsize=24)
+        page.insert_text((50, 94), 'to PCI Express', fontsize=24)
+        page.insert_text((50, 118), 'Gen2 v2.9', fontsize=24)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    assert len(plan['regions']) == 1
+    assert plan['regions'][0]['source'] == 'AXI Memory Mapped\nto PCI Express\nGen2 v2.9'
+    report = translation.render_page(
+        str(path), plan, {plan['regions'][0]['id']: 'AXI内存映射至PCI Express\nGen2 v2.9'}, str(output))
+    assert report['translated'] == 1
+    assert not report['warnings']
+    with fitz.open(output) as doc:
+        text = doc[0].get_text()
+        assert 'AXI Memory Mapped' not in text
+        assert 'Gen2 v2.9' in text
+
+
+def test_short_tail_is_translated_with_its_paragraph(tmp_path):
+    path, output = tmp_path / 'tail.pdf', tmp_path / 'tail-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=400, height=300)
+        page.insert_text((40, 80), 'The bridge supports pending memory mapped', fontsize=10)
+        page.insert_text((40, 92), 'transactions.', fontsize=10)
+        page.insert_text((40, 120), 'A separate paragraph below.', fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    first = plan['regions'][0]
+    assert first['source'].endswith('\ntransactions.')
+    assert len(plan['regions']) == 2
+    report = translation.render_page(str(path), plan, {first['id']: '桥支持待处理的内存映射事务。'}, str(output))
+    assert report['placement_count'] == 1 and not report['warnings']
+    with fitz.open(output) as doc:
+        assert 'transactions.' not in doc[0].get_text()
+        assert 'A separate paragraph below.' in doc[0].get_text()
+
+
+def test_trademark_is_inline_content_not_a_formula(tmp_path):
+    path, output = tmp_path / 'mark.pdf', tmp_path / 'mark-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=400, height=300)
+        page.insert_text((40, 80), 'Compatible with AMBA', fontsize=10)
+        end = 40 + fitz.get_text_length('Compatible with AMBA', fontsize=10)
+        page.insert_text((end, 76), '\u00ae', fontsize=7)
+        page.insert_text((end + 7, 80), ' AXI Protocol', fontsize=10)
+        page.insert_text((40, 92), 'Specification.', fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    assert len(plan['regions']) == 1
+    r = plan['regions'][0]
+    assert 'Specification.' in r['source'] and '\u00ae' in r['source']
+    masked, tokens = translation.protect(r['source'])
+    assert '\u00ae' not in masked
+    assert translation.restore(masked, tokens) == r['source']
+    report = translation.render_page(str(path), plan, {r['id']: '兼容 AMBA\u00ae AXI 协议规范。'}, str(output))
+    assert report['placement_count'] == 1 and not report['warnings']
+    with fitz.open(output) as doc:
+        assert 'Compatible' not in doc[0].get_text()
+        assert '\u00ae' in doc[0].get_text()
+
+
+def test_paragraphs_respect_columns_and_horizontal_rules(tmp_path):
+    path = tmp_path / 'columns.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=600, height=300)
+        for x, name in ((40, 'Left'), (330, 'Right')):
+            page.insert_text((x, 80), name + ' column has a long description', fontsize=10)
+            page.insert_text((x, 92), 'continued.', fontsize=10)
+            page.draw_line((x, 95), (x + 200, 95))
+            page.insert_text((x, 104), 'Separate label', fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    descriptions = [r for r in plan['regions'] if 'description' in r['source']]
+    assert len(descriptions) == 2
+    assert all(r['source'].endswith('continued.') for r in descriptions)
+    assert all('Separate' not in r['source'] for r in descriptions)
+    assert all(not ('Left' in r['source'] and 'Right' in r['source']) for r in plan['regions'])
+
+
+def test_real_subscript_is_not_folded_into_prose(tmp_path):
+    path, output = tmp_path / 'formula.pdf', tmp_path / 'formula-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page()
+        page.insert_text((40, 80), 'Voltage', fontsize=10)
+        page.insert_text((85, 80), 'V', fontsize=10)
+        page.insert_text((92, 83), 'CC', fontsize=7)
+        page.insert_text((105, 80), '= 5 V', fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    assert all('CC' not in r['source'] for r in plan['regions'])
+    translation.render_page(str(path), plan, {r['id']: '电压' for r in plan['regions']}, str(output))
+    with fitz.open(path) as before, fitz.open(output) as after:
+        assert before[0].search_for('CC') == after[0].search_for('CC')
+
+
+def test_signal_column_is_preserved_not_reported_as_missing_translation(tmp_path):
+    path, output = tmp_path / 'ports.pdf', tmp_path / 'ports-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=400, height=200)
+        for x in (20, 170, 380):
+            page.draw_line((x, 20), (x, 100))
+        for y in (20, 60, 100):
+            page.draw_line((20, y), (380, y))
+        for point, text in [((25, 40), 'Signal Name'), ((175, 40), 'Description'),
+                            ((25, 80), 'refclk'), ((175, 80), 'Reference clock')]:
+            page.insert_text(point, text, fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    assert len(plan['regions']) == 3
+    assert all(r['source'] != 'refclk' for r in plan['regions'])
+    report = translation.render_page(str(path), plan, {r['id']: '说明' for r in plan['regions']}, str(output))
+    assert report['pending_count'] == 0 and report['translation_count'] == 3
+    with fitz.open(path) as before, fitz.open(output) as after:
+        assert before[0].search_for('refclk') == after[0].search_for('refclk')
+
+
+def test_unplaced_translation_remains_accessible_and_pending_is_separate(source, tmp_path):
+    plan = translation.analyze_page(str(source), 1)
+    targets = {'t0r0c0': '完整内容' * 100, 't0r0c1': '说明'}
+    report = translation.render_page(str(source), plan, targets, str(tmp_path / 'partial.pdf'))
+    assert (report['translation_count'], report['placement_count'], report['pending_count']) == (2, 1, 1)
+    assert report['unplaced_count'] == 1
+    details = {d['id']: d for d in report['details']}
+    assert details['t0r0c0']['translation'] == targets['t0r0c0']
+    assert details['t0r0c0']['status'] == 'unplaced'
+    assert details['t0r0c1']['status'] == 'placed'
+    assert details['t0r1c1']['status'] == 'pending'
+
+
+def test_deferred_cell_is_translated_without_erasing_uncertain_content(source, tmp_path):
+    plan = translation.analyze_page(str(source), 1)
+    plan['regions'][0]['placement'] = 'deferred'
+    r = plan['regions'][0]
+    report = translation.render_page(str(source), plan, {r['id']: '编号'}, str(tmp_path / 'deferred.pdf'))
+    assert report['translation_count'] == 1 and report['placement_count'] == 0
+    assert report['details'][0]['translation'] == '编号'
+    with fitz.open(tmp_path / 'deferred.pdf') as doc:
+        assert 'Code' in doc[0].get_text()
+
+
 @pytest.mark.asyncio
 async def test_measured_overflow_retries_only_failed_regions(source, tmp_path):
     plan = translation.analyze_page(str(source), 1)
@@ -155,6 +318,66 @@ async def test_structured_response_ids_and_retry(source):
     targets, warnings = await translation.translate_regions(plan, bad)
     assert not targets and len(warnings) == 3
     assert bad.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_stops_batches_and_exposes_no_raw_credentials():
+    plan = {'regions': [{'id': f'p{i}', 'source': 'Description'} for i in range(30)], 'tables': []}
+    complete = AsyncMock(side_effect=server.HTTPException(500, 'HTTP 402: Insufficient Balance; secret-key'))
+    targets, warnings = await translation.translate_regions(plan, complete)
+    assert not targets and len(warnings) == 30 and complete.await_count == 1
+    assert all(w['code'] == 'provider_unavailable' for w in warnings)
+    assert '余额不足' in warnings[0]['reason']
+    assert 'secret-key' not in json.dumps(warnings)
+
+
+@pytest.mark.asyncio
+async def test_invalid_token_retry_receives_feedback():
+    plan = {'regions': [{'id': 'p0', 'source': 'Current 20 mA'}], 'tables': []}
+    async def answer(prompt, **kwargs):
+        item = json.loads(prompt.split('\n', 1)[1])['items'][0]
+        if 'validation_feedback' not in item:
+            return '{"p0":"电流"}', 'mock'
+        assert 'token missing' in item['validation_feedback']
+        return '{"p0":"电流 __KEEP0__ mA"}', 'mock'
+    targets, warnings = await translation.translate_regions(plan, answer)
+    assert targets == {'p0': '电流 20 mA'} and not warnings
+
+
+def test_retry_keeps_valid_translations_during_provider_outage(source, monkeypatch):
+    monkeypatch.setattr(server, 'BOOKS_DIR', str(source.parent.parent))
+    initial = AsyncMock(return_value=({'t0r0c0': '编号'}, []))
+    monkeypatch.setattr(translation, 'translate_regions', initial)
+    with TestClient(server.app) as client:
+        original = client.post('/api/pdf-translation/sample', json={'page': 1}).json()
+        async def unavailable(plan, complete):
+            assert 't0r0c0' not in {r['id'] for r in plan['regions']}
+            return {}, [{'id': r['id'], 'code': 'provider_unavailable', 'reason': '服务不可用'}
+                        for r in plan['regions']]
+        monkeypatch.setattr(translation, 'translate_regions', unavailable)
+        report = client.post('/api/pdf-translation/sample', json={'page': 1, 'force': True}).json()
+        assert report['translation_count'] == original['translation_count'] == 1
+        assert report['placement_count'] == 1 and report['pending_count'] == 2
+        assert report['status'] == 'review'
+        artifact = client.get(report['pdf_url'])
+        with fitz.open(stream=artifact.content, filetype='pdf') as doc:
+            assert '编号' in doc[0].get_text().replace(' ', '')
+
+
+def test_cache_only_never_calls_translation_provider(source, monkeypatch):
+    monkeypatch.setattr(server, 'BOOKS_DIR', str(source.parent.parent))
+    complete = AsyncMock(return_value=({'t0r0c0': '编号'}, []))
+    monkeypatch.setattr(translation, 'translate_regions', complete)
+    with TestClient(server.app) as client:
+        assert client.post('/api/pdf-translation/sample', json={'page': 1, 'cache_only': True}).status_code == 404
+        complete.assert_not_called()
+        original = client.post('/api/pdf-translation/sample', json={'page': 1}).json()
+        assert complete.await_count == 1
+        cached = client.post('/api/pdf-translation/sample', json={'page': 1, 'cache_only': True})
+        assert cached.json() == original and complete.await_count == 1
+        assert client.post('/api/pdf-translation/sample', json={
+            'page': 1, 'force': True, 'cache_only': True}).status_code == 400
+        assert client.post('/api/pdf-translation/sample', json={'page': 1, 'cache_only': 'yes'}).status_code == 400
 
 
 def test_scan_is_explicit_fallback(tmp_path):
