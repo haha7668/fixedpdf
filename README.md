@@ -21,7 +21,7 @@
 |------|------|------|
 | Web 框架 | [FastAPI](https://github.com/fastapi/fastapi) / [Uvicorn](https://github.com/encode/uvicorn) | 后端服务 |
 | PDF 处理 | [PyMuPDF](https://github.com/pymupdf/PyMuPDF) | PDF 文本/段落/坐标提取、目录解析 |
-| 电子书 | [EbookLib](https://github.com/aerkalov/ebooklib) | EPUB 解析 |
+| 电子书 | 标准库 `zipfile` + `xml.etree` | EPUB 解析（自研，替代 EbookLib） |
 | 语音 | [Edge-TTS](https://github.com/rany2/edge-tts) | 文本朗读 |
 | HTTP | [httpx](https://github.com/encode/httpx) | AI API 调用 |
 | AI SDK | [google-genai](https://github.com/googleapis/python-genai) | Gemini 接入 |
@@ -123,9 +123,9 @@ $env:PYTHONUTF8=1; $env:PYTHONIOENCODING="utf-8"
 
 ## 📄 许可证
 
-本项目延续上游的 [MIT License](LICENSE)（Copyright (c) 2026 Haining Yu）。
+本项目采用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0，Copyright (c) 2026 Haining Yu）。
 
-新增代码同样遵循 MIT 协议。引用各开源库的许可，请参见各上游仓库。
+> 由于本项目集成了 [PyMuPDF](https://github.com/pymupdf/PyMuPDF)（AGPL-3.0），其 copyleft 条款要求本仓库同样以 AGPL-3.0 分发。集成各第三方开源库的许可与版权声明，请参见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ---
 

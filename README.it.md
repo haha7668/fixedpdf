@@ -75,4 +75,6 @@ Entra nell'interfaccia di lettura, clicca su **Impostazioni (Settings)** in alto
 Per configurazioni dettagliate (dizionari offline, accesso multi-dispositivo, impostazioni porta), consulta la [Guida Utente](docs/GUIDE.md).
 
 ## 📄 Licenza
-[MIT License](LICENSE)
+[Licenza GNU AGPL-3.0](LICENSE)
+
+> Questo progetto è distribuito sotto AGPL-3.0 perché integra [PyMuPDF](https://github.com/pymupdf/PyMuPDF) (AGPL-3.0). Vedi [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) per le note di terze parti.

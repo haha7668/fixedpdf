@@ -9,7 +9,6 @@ uv run pyinstaller --noconfirm --clean --onedir --windowed `
     --name pdf_reader `
     --add-data "templates;templates" `
     --add-data "assets;assets" `
-    --collect-all ebooklib `
     --collect-all edge_tts `
     --collect-all google.genai `
     --collect-all fitz `

@@ -75,4 +75,6 @@ Entrez dans l'interface de lecture, cliquez sur **Paramètres (Settings)** en ha
 Pour des configurations détaillées (dictionnaires hors ligne, accès multi-appareils, paramètres de port), consultez le [Guide Utilisateur](docs/GUIDE.md).
 
 ## 📄 Licence
-[MIT License](LICENSE)
+[Licence GNU AGPL-3.0](LICENSE)
+
+> Ce projet est distribué sous AGPL-3.0 car il intègre [PyMuPDF](https://github.com/pymupdf/PyMuPDF) (AGPL-3.0). Voir [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) pour les mentions tierces.

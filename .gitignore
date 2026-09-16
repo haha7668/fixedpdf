@@ -73,3 +73,6 @@ dist/
 # Local PDF verification artifacts and browser sessions (may contain book text)
 output/
 .playwright-cli/
+
+# Local debugging artifacts (screenshots, ad-hoc scripts, pytest basetemp)
+tmp/

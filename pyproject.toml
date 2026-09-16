@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "Simple EPUB reader web app"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "AGPL-3.0-only"
 dependencies = [
     "beautifulsoup4>=4.14.2",
     "dashscope>=1.25.12",
-    "ebooklib>=0.20",
     "edge-tts>=7.2.7",
     "fastapi>=0.121.2",
     "google-genai>=1.0.0",

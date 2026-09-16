@@ -3,16 +3,47 @@ import os
 import pickle
 import shutil
 import tempfile
+import zipfile
 import zlib
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from ebooklib import epub
 from fastapi.testclient import TestClient
 
 import server
 from reader3 import Book, BookMetadata, ChapterContent
+
+
+def _make_epub_bytes(title="Test Book"):
+    """用标准库生成一个最小 EPUB 的字节内容（供 import-local/upload 测试使用）。"""
+    entries = {
+        'META-INF/container.xml': (
+            b'<?xml version="1.0" encoding="utf-8"?>'
+            b'<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">'
+            b'<rootfiles><rootfile full-path="OEBPS/content.opf" '
+            b'media-type="application/oebps-package+xml"/></rootfiles></container>'
+        ),
+        'OEBPS/ch1.xhtml': b'<html><body><p>Content of chapter.</p></body></html>',
+        'OEBPS/content.opf': (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">'
+            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            '<dc:identifier id="id">test-id</dc:identifier>'
+            f'<dc:title>{title}</dc:title>'
+            '<dc:language>en</dc:language>'
+            '<dc:creator>Author</dc:creator>'
+            '</metadata>'
+            '<manifest><item id="ch0" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest>'
+            '<spine><itemref idref="ch0"/></spine>'
+            '</package>'
+        ).encode(),
+    }
+    buf = BytesIO()
+    with zipfile.ZipFile(buf, 'w') as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
 
 
 @pytest.fixture
@@ -1611,18 +1642,8 @@ class TestImportLocal:
 
     def test_import_local_epub(self, client, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'test.epub')
-        book = epub.EpubBook()
-        book.set_identifier('test-id')
-        book.set_title('Test Book')
-        book.set_language('en')
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content of chapter.</p></body></html>'
-        book.add_item(c)
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
+        with open(epub_path, 'wb') as f:
+            f.write(_make_epub_bytes('Test Book'))
         with patch.object(server, 'BOOKS_DIR', tmp_dir), patch('shutil.copy2'):
             response = client.post('/api/import-local', json={"path": epub_path})
             assert response.status_code == 200
@@ -1630,18 +1651,8 @@ class TestImportLocal:
 
     def test_import_local_epub_copy_fallback(self, client, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'fallback.epub')
-        book = epub.EpubBook()
-        book.set_identifier('fb-id')
-        book.set_title('Fallback')
-        book.set_language('en')
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content.</p></body></html>'
-        book.add_item(c)
-        book.toc = []
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
+        with open(epub_path, 'wb') as f:
+            f.write(_make_epub_bytes('Fallback'))
         with patch.object(server, 'BOOKS_DIR', tmp_dir):
             with patch('shutil.copy2', side_effect=PermissionError("denied")):
                 with patch('shutil.copy'):
@@ -1658,20 +1669,7 @@ class TestUpload:
         assert client.post('/api/upload', files=data).status_code == 400
 
     def test_upload_epub(self, client, tmp_dir):
-        book = epub.EpubBook()
-        book.set_identifier('upload-id')
-        book.set_title('Upload Test')
-        book.set_language('en')
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content.</p></body></html>'
-        book.add_item(c)
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub_buf = BytesIO()
-        epub.write_epub(epub_buf, book, {})
-        epub_buf.seek(0)
+        epub_buf = BytesIO(_make_epub_bytes('Upload Test'))
         with patch.object(server, 'BOOKS_DIR', tmp_dir), patch('shutil.copy2'):
             with patch.object(server, '_find_cover_image', return_value=None):
                 data = {'file': ('test.epub', epub_buf, 'application/epub+zip')}
@@ -1694,18 +1692,8 @@ class TestReprocess:
         book_dir = os.path.join(tmp_dir, 'reprocess_data')
         os.makedirs(book_dir, exist_ok=True)
         epub_path = os.path.join(book_dir, 'source.epub')
-        book = epub.EpubBook()
-        book.set_identifier('re-id')
-        book.set_title('Reprocess')
-        book.set_language('en')
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content.</p></body></html>'
-        book.add_item(c)
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
+        with open(epub_path, 'wb') as f:
+            f.write(_make_epub_bytes('Reprocess'))
         with patch.object(server, 'BOOKS_DIR', tmp_dir):
             server._analysis_cache['reprocess_data:0'] = {'old': True}
             response = client.post('/api/reprocess/reprocess_data')
@@ -2677,19 +2665,8 @@ class TestDictDownloadProgress:
 class TestImportLocalEdge:
     def test_import_local_epub(self, client, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'test.epub')
-        from ebooklib import epub
-        book = epub.EpubBook()
-        book.set_identifier('test-id')
-        book.set_title('Test Book')
-        book.set_language('en')
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content of chapter.</p></body></html>'
-        book.add_item(c)
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
+        with open(epub_path, 'wb') as f:
+            f.write(_make_epub_bytes('Test Book'))
 
         with patch.object(server, 'BOOKS_DIR', tmp_dir), patch('shutil.copy2'):
             response = client.post('/api/import-local', json={"path": epub_path})

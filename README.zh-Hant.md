@@ -75,4 +75,6 @@ uv run server.py
 詳細的配置說明（如離線詞典下載、多設備訪問、端口修改），請參閱 [使用指南](docs/GUIDE.md)。
 
 ## 📄 許可證
-[MIT License](LICENSE)
+[GNU AGPL-3.0 許可證](LICENSE)
+
+> 因集成 [PyMuPDF](https://github.com/pymupdf/PyMuPDF)（AGPL-3.0），本項目以 AGPL-3.0 分發。第三方聲明請參見 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

@@ -5,17 +5,19 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from unittest.mock import MagicMock
+import zipfile
 
 import pytest
 from bs4 import BeautifulSoup
-from ebooklib import epub
 
 from reader3 import (
     Book,
     BookMetadata,
     ChapterContent,
+    Link,
+    Section,
     TOCEntry,
+    _ManifestItem,
     clean_html_content,
     extract_metadata_robust,
     extract_plain_text,
@@ -26,6 +28,7 @@ from reader3 import (
 )
 
 # --- Helper fixtures ---
+
 
 @pytest.fixture
 def sample_html():
@@ -47,6 +50,7 @@ def sample_html():
     </html>
     """
 
+
 @pytest.fixture
 def tmp_dir():
     d = tempfile.mkdtemp()
@@ -54,103 +58,137 @@ def tmp_dir():
     shutil.rmtree(d, ignore_errors=True)
 
 
+# --- 标准库实现的 EPUB 生成器（替代 EbookLib） ---
+
+def _write_epub(path, *, title="Test Book", author="Author", language="en",
+                chapters=(), images=(), nav=None, ncx=None, cover_meta_id=None):
+    """用 zipfile + 手写 XML 生成一个最小可解析的 EPUB。
+
+    chapters: [(href, html_bytes_or_str), ...]
+    images:   [(href, content_bytes, media_type), ...]
+    nav:      nav.xhtml 内容（EPUB3 TOC）
+    ncx:      toc.ncx 内容（EPUB2 TOC）
+    cover_meta_id: OPF <meta name="cover" content="..."> 指向的 manifest id
+    """
+    entries = {}
+
+    entries['META-INF/container.xml'] = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">'
+        b'<rootfiles><rootfile full-path="OEBPS/content.opf" '
+        b'media-type="application/oebps-package+xml"/></rootfiles></container>'
+    )
+
+    manifest_items = []
+
+    def add_item(item_id, href, media_type, properties=''):
+        manifest_items.append((item_id, href, media_type, properties))
+
+    for i, (href, content) in enumerate(chapters):
+        add_item(f'ch{i}', href, 'application/xhtml+xml')
+        entries['OEBPS/' + href] = content if isinstance(content, bytes) else content.encode('utf-8')
+
+    for i, (href, content, media_type) in enumerate(images):
+        add_item(f'img{i}', href, media_type)
+        entries['OEBPS/' + href] = content
+
+    if nav is not None:
+        add_item('nav', 'nav.xhtml', 'application/xhtml+xml', properties='nav')
+        entries['OEBPS/nav.xhtml'] = nav if isinstance(nav, bytes) else nav.encode('utf-8')
+
+    if ncx is not None:
+        add_item('ncx', 'toc.ncx', 'application/x-dtbncx+xml')
+        entries['OEBPS/toc.ncx'] = ncx if isinstance(ncx, bytes) else ncx.encode('utf-8')
+
+    spine_ids = [mid for mid, _, _, _ in manifest_items if mid.startswith('ch')]
+    spine_xml = ''.join(f'<itemref idref="{mid}"/>' for mid in spine_ids)
+
+    manifest_xml = ''.join(
+        f'<item id="{mid}" href="{href}" media-type="{mt}"'
+        + (f' properties="{p}"' if p else '') + '/>'
+        for mid, href, mt, p in manifest_items
+    )
+
+    meta_cover = f'<meta name="cover" content="{cover_meta_id}"/>' if cover_meta_id else ''
+
+    spine_attrs = ' toc="ncx"' if ncx is not None else ''
+    opf = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">'
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+        '<dc:identifier id="id">test-id</dc:identifier>'
+        f'<dc:title>{title}</dc:title>'
+        f'<dc:language>{language}</dc:language>'
+        f'<dc:creator>{author}</dc:creator>'
+        f'{meta_cover}'
+        '</metadata>'
+        f'<manifest>{manifest_xml}</manifest>'
+        f'<spine{spine_attrs}>{spine_xml}</spine>'
+        '</package>'
+    ).encode()
+    entries['OEBPS/content.opf'] = opf
+
+    with zipfile.ZipFile(path, 'w') as zf:
+        for name, data in entries.items():
+            zf.writestr(name, data)
+
+
 def _create_minimal_epub(path, title="Test Book", author="Author", chapters=None):
-    book = epub.EpubBook()
-    book.set_identifier('test-id-123')
-    book.set_title(title)
-    book.set_language('en')
-    book.add_author(author)
-
     if chapters is None:
-        chapters = [("Chapter 1", "<h1>Chapter 1</h1><p>Content of chapter 1.</p>"),
-                     ("Chapter 2", "<h1>Chapter 2</h1><p>Content of chapter 2.</p>")]
-
-    spine_items = []
-    for i, (ch_title, ch_html) in enumerate(chapters):
-        c = epub.EpubHtml(title=ch_title, file_name=f'chap_{i:02d}.xhtml', lang='en')
-        c.content = ch_html.encode('utf-8')
-        book.add_item(c)
-        spine_items.append(c)
-
-    book.toc = [epub.Link(f'chap_{i:02d}.xhtml', t, f'chap_{i:02d}') for i, (t, _) in enumerate(chapters)]
-    book.add_item(epub.EpubNcx())
-    book.add_item(epub.EpubNav())
-    book.spine = spine_items
-
-    epub.write_epub(path, book, {})
+        chapters = [
+            ("Chapter 1", "<h1>Chapter 1</h1><p>Content of chapter 1. " + "word " * 20 + "</p>"),
+            ("Chapter 2", "<h1>Chapter 2</h1><p>Content of chapter 2. " + "word " * 20 + "</p>"),
+        ]
+    _write_epub(
+        path, title=title, author=author,
+        chapters=[(f'chap_{i:02d}.xhtml', html) for i, (_, html) in enumerate(chapters)],
+    )
     return path
 
 
 def _create_epub_with_images(path):
-    book = epub.EpubBook()
-    book.set_identifier('img-test-id')
-    book.set_title('Book With Images')
-    book.set_language('en')
-    book.add_author('Img Author')
-
-    c = epub.EpubHtml(title='Intro', file_name='intro.xhtml', lang='en')
-    c.content = b'<html><body><h1>Intro</h1><p>Content.</p></body></html>'
-    book.add_item(c)
-
-    img = epub.EpubImage()
-    img.file_name = 'images/cover.jpg'
-    img.media_type = 'image/jpeg'
-    img.content = b'\xff\xd8\xff\xe0' + b'\x00' * 100
-    book.add_item(img)
-
-    book.toc = [epub.Link('intro.xhtml', 'Intro', 'intro')]
-    book.add_item(epub.EpubNcx())
-    book.add_item(epub.EpubNav())
-    book.spine = [c]
-    epub.write_epub(path, book, {})
+    _write_epub(
+        path,
+        title='Book With Images', author='Img Author',
+        chapters=[('intro.xhtml', '<html><body><h1>Intro</h1><p>Content.</p></body></html>')],
+        images=[('images/cover.jpg', b'\xff\xd8\xff\xe0' + b'\x00' * 100, 'image/jpeg')],
+    )
     return path
 
 
 def _create_epub_with_short_chapters(path):
-    book = epub.EpubBook()
-    book.set_identifier('short-test-id')
-    book.set_title('Short Chapter Book')
-    book.set_language('en')
-
-    long = epub.EpubHtml(title='Long Chapter', file_name='long.xhtml', lang='en')
-    long.content = b'<html><body><h1>Chapter</h1><p>' + b'word ' * 20 + b'</p></body></html>'
-    book.add_item(long)
-
-    short = epub.EpubHtml(title='Short', file_name='short.xhtml', lang='en')
-    short.content = b'<p>X</p>'
-    book.add_item(short)
-
-    book.toc = [epub.Link('long.xhtml', 'Long', 'long'),
-                epub.Link('short.xhtml', 'Short', 'short')]
-    book.add_item(epub.EpubNcx())
-    book.add_item(epub.EpubNav())
-    book.spine = [long, short]
-    epub.write_epub(path, book, {})
+    _write_epub(
+        path,
+        title='Short Chapter Book', author='Author',
+        chapters=[
+            ('long.xhtml', '<html><body><h1>Chapter</h1><p>' + 'word ' * 20 + '</p></body></html>'),
+            ('short.xhtml', '<p>X</p>'),
+        ],
+    )
     return path
 
 
+_NAV_NESTED = (
+    '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Nav</title></head><body>'
+    '<nav epub:type="toc"><h1>Contents</h1><ol>'
+    '<li><span>Part I</span><ol>'
+    '<li><a href="p1.xhtml">Chapter 1</a></li>'
+    '<li><a href="p2.xhtml">Chapter 2</a></li>'
+    '</ol></li>'
+    '</ol></nav></body></html>'
+)
+
+
 def _create_epub_with_toc_sections(path):
-    book = epub.EpubBook()
-    book.set_identifier('toc-test-id')
-    book.set_title('Nested TOC Book')
-    book.set_language('en')
-
-    c1 = epub.EpubHtml(title='Part 1', file_name='p1.xhtml', lang='en')
-    c1.content = b'<html><body><h1>Part 1</h1><p>Content one.</p></body></html>'
-    book.add_item(c1)
-
-    c2 = epub.EpubHtml(title='Part 2', file_name='p2.xhtml', lang='en')
-    c2.content = b'<html><body><h1>Part 2</h1><p>Content two.</p></body></html>'
-    book.add_item(c2)
-
-    link1 = epub.Link('p1.xhtml', 'Chapter 1', 'ch1')
-    link2 = epub.Link('p2.xhtml', 'Chapter 2', 'ch2')
-    section = epub.Section('Part I')
-    book.toc = [(section, [link1, link2])]
-    book.add_item(epub.EpubNcx())
-    book.add_item(epub.EpubNav())
-    book.spine = [c1, c2]
-    epub.write_epub(path, book, {})
+    _write_epub(
+        path,
+        title='Nested TOC Book', author='Author',
+        chapters=[
+            ('p1.xhtml', '<html><body><h1>Part 1</h1><p>Content one.</p></body></html>'),
+            ('p2.xhtml', '<html><body><h1>Part 2</h1><p>Content two.</p></body></html>'),
+        ],
+        nav=_NAV_NESTED,
+    )
     return path
 
 
@@ -228,8 +266,8 @@ class TestExtractPlainText:
 class TestParseTocRecursive:
     def test_simple_links(self):
         links = [
-            epub.Link('ch1.xhtml', 'Chapter 1', 'ch1'),
-            epub.Link('ch2.xhtml', 'Chapter 2', 'ch2'),
+            Link('ch1.xhtml', 'Chapter 1', 'ch1'),
+            Link('ch2.xhtml', 'Chapter 2', 'ch2'),
         ]
         result = parse_toc_recursive(links)
         assert len(result) == 2
@@ -239,15 +277,15 @@ class TestParseTocRecursive:
         assert result[1].title == 'Chapter 2'
 
     def test_link_with_anchor(self):
-        links = [epub.Link('ch1.xhtml#sec1', 'Section 1', 's1')]
+        links = [Link('ch1.xhtml#sec1', 'Section 1', 's1')]
         result = parse_toc_recursive(links)
         assert len(result) == 1
         assert result[0].file_href == 'ch1.xhtml'
         assert result[0].anchor == 'sec1'
 
     def test_nested_section(self):
-        child_link = epub.Link('ch1.xhtml', 'Child', 'c1')
-        section = epub.Section('Part I')
+        child_link = Link('ch1.xhtml', 'Child', 'c1')
+        section = Section('Part I')
         result = parse_toc_recursive([(section, [child_link])])
         assert len(result) == 1
         assert result[0].title == 'Part I'
@@ -260,7 +298,7 @@ class TestParseTocRecursive:
         assert result == []
 
     def test_section_item(self):
-        sec = epub.Section('Section A')
+        sec = Section('Section A')
         sec.href = 'sec_a.xhtml'
         result = parse_toc_recursive([sec])
         assert len(result) == 1
@@ -270,12 +308,12 @@ class TestParseTocRecursive:
     def test_bad_toc_item_skipped(self):
         class BadItem:
             pass
-        good = epub.Link('ch1.xhtml', 'Good', 'ch1')
-        result = parse_toc_recursive([good, BadItem(), epub.Link('ch2.xhtml', 'Good2', 'ch2')])
+        good = Link('ch1.xhtml', 'Good', 'ch1')
+        result = parse_toc_recursive([good, BadItem(), Link('ch2.xhtml', 'Good2', 'ch2')])
         assert len(result) == 2
 
     def test_tuple_with_bad_section(self):
-        epub.Link('ch1.xhtml', 'Ch1', 'ch1')
+        Link('ch1.xhtml', 'Ch1', 'ch1')
         result = parse_toc_recursive([(42,)])
         assert result == []
 
@@ -284,34 +322,34 @@ class TestParseTocRecursive:
         assert result == []
 
     def test_parse_toc_mixed(self):
-        items = [epub.Link('ch1.xhtml', 'Ch1', 'ch1'), 123, epub.Link('ch2.xhtml', 'Ch2', 'ch2')]
+        items = [Link('ch1.xhtml', 'Ch1', 'ch1'), 123, Link('ch2.xhtml', 'Ch2', 'ch2')]
         result = parse_toc_recursive(items)
         assert len(result) == 2
 
     def test_section_with_link_items(self):
-        link = epub.Link('ch1.xhtml', 'Ch1', 'ch1')
-        sec = epub.Section('Part')
+        link = Link('ch1.xhtml', 'Ch1', 'ch1')
+        sec = Section('Part')
         sec.href = [link]
         result = parse_toc_recursive([sec])
         assert len(result) == 1
         assert result[0].href == 'ch1.xhtml'
 
     def test_section_with_str_items(self):
-        sec = epub.Section('Part')
+        sec = Section('Part')
         sec.href = ["section.html"]
         result = parse_toc_recursive([sec])
         assert len(result) == 1
         assert result[0].href == 'section.html'
 
     def test_toc_section_with_anchor(self):
-        sec = epub.Section('Part')
+        sec = Section('Part')
         sec.href = "section.html#anchor1"
         result = parse_toc_recursive([sec])
         assert result[0].anchor == 'anchor1'
         assert result[0].file_href == 'section.html'
 
     def test_section_with_empty_list(self):
-        sec = epub.Section('Part')
+        sec = Section('Part')
         sec.href = []
         result = parse_toc_recursive([sec])
         assert len(result) == 1
@@ -321,22 +359,12 @@ class TestParseTocRecursive:
 
 class TestGetFallbackToc:
     def test_builds_from_documents(self):
-        import ebooklib
-        mock_book = MagicMock()
-        item1 = MagicMock()
-        item1.get_type.return_value = ebooklib.ITEM_DOCUMENT
-        item1.get_name.return_value = 'chapter1.html'
-
-        item2 = MagicMock()
-        item2.get_type.return_value = ebooklib.ITEM_DOCUMENT
-        item2.get_name.return_value = 'introduction.xhtml'
-
-        item3 = MagicMock()
-        item3.get_type.return_value = ebooklib.ITEM_IMAGE
-        item3.get_name.return_value = 'cover.jpg'
-
-        mock_book.get_items.return_value = [item1, item2, item3]
-        toc = get_fallback_toc(mock_book)
+        items = [
+            _ManifestItem(id='1', href='chapter1.html', media_type='application/xhtml+xml'),
+            _ManifestItem(id='2', href='introduction.xhtml', media_type='application/xhtml+xml'),
+            _ManifestItem(id='3', href='cover.jpg', media_type='image/jpeg'),
+        ]
+        toc = get_fallback_toc(items)
         assert len(toc) == 2
         assert toc[0].file_href == 'chapter1.html'
         assert toc[1].file_href == 'introduction.xhtml'
@@ -346,19 +374,17 @@ class TestGetFallbackToc:
 
 class TestExtractMetadataRobust:
     def test_extracts_basic_metadata(self):
-        mock_book = MagicMock()
-        mock_book.get_metadata.side_effect = lambda ns, key: {
-            ('DC', 'title'): [('My Book',)],
-            ('DC', 'language'): [('en',)],
-            ('DC', 'creator'): [('Author One',), ('Author Two',)],
-            ('DC', 'description'): [('A great book.',)],
-            ('DC', 'publisher'): [('Pub Co',)],
-            ('DC', 'date'): [('2024-01-01',)],
-            ('DC', 'identifier'): [('isbn-123',)],
-            ('DC', 'subject'): [('fiction',), ('adventure',)],
-        }.get((ns, key), [])
-
-        meta = extract_metadata_robust(mock_book)
+        metadata = {
+            'title': ['My Book'],
+            'language': ['en'],
+            'creator': ['Author One', 'Author Two'],
+            'description': ['A great book.'],
+            'publisher': ['Pub Co'],
+            'date': ['2024-01-01'],
+            'identifier': ['isbn-123'],
+            'subject': ['fiction', 'adventure'],
+        }
+        meta = extract_metadata_robust(metadata)
         assert meta.title == 'My Book'
         assert meta.language == 'en'
         assert meta.authors == ['Author One', 'Author Two']
@@ -369,9 +395,7 @@ class TestExtractMetadataRobust:
         assert meta.subjects == ['fiction', 'adventure']
 
     def test_defaults_when_empty(self):
-        mock_book = MagicMock()
-        mock_book.get_metadata.return_value = []
-        meta = extract_metadata_robust(mock_book)
+        meta = extract_metadata_robust({})
         assert meta.title == 'Untitled'
         assert meta.language == 'en'
         assert meta.authors == []
@@ -448,257 +472,122 @@ class TestProcessEpub:
 
     def test_cover_from_opf_meta(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'cover_opf.epub')
-        book = epub.EpubBook()
-        book.set_identifier('cover-opf-id')
-        book.set_title('Cover OPF')
-        book.set_language('en')
-
-        img = epub.EpubImage()
-        img.file_name = 'images/cover.jpg'
-        img.media_type = 'image/jpeg'
-        img.content = b'\xff\xd8\xff\xe0' + b'\x00' * 100
-        book.add_item(img)
-
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content with enough text to pass checks.</p></body></html>'
-        book.add_item(c)
-
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='Cover OPF', author='Author',
+            chapters=[('ch1.xhtml', '<html><body><p>Content with enough text to pass checks.</p></body></html>')],
+            images=[('images/cover.jpg', b'\xff\xd8\xff\xe0' + b'\x00' * 100, 'image/jpeg')],
+        )
         out_dir = os.path.join(tmp_dir, 'opf_out')
         result = process_epub(epub_path, out_dir)
         assert len(result.spine) >= 1
 
     def test_cover_epub3_item_cover(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'epub3_cover.epub')
-        book = epub.EpubBook()
-        book.set_identifier('epub3-id')
-        book.set_title('EPUB3 Cover')
-        book.set_language('en')
-
-        img = epub.EpubImage()
-        img.file_name = 'images/cover.jpg'
-        img.media_type = 'image/jpeg'
-        img.content = b'\xff\xd8\xff\xe0' + b'\x00' * 100
-        img.properties = 'cover-image'
-        book.add_item(img)
-
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content with enough text.</p></body></html>'
-        book.add_item(c)
-
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='EPUB3 Cover', author='Author',
+            chapters=[('ch1.xhtml', '<html><body><p>Content with enough text.</p></body></html>')],
+            images=[('images/cover.jpg', b'\xff\xd8\xff\xe0' + b'\x00' * 100, 'image/jpeg')],
+        )
         out_dir = os.path.join(tmp_dir, 'epub3_out')
         result = process_epub(epub_path, out_dir)
         assert len(result.spine) >= 1
 
     def test_cover_opf_bad_item_id(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'bad_cover_id.epub')
-        book = epub.EpubBook()
-        book.set_identifier('bad-id')
-        book.set_title('Bad Cover ID')
-        book.set_language('en')
-
-        book.add_metadata('OPF', 'meta', '', {'name': 'cover', 'content': 'nonexistent-id'})
-
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content with enough text.</p></body></html>'
-        book.add_item(c)
-
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='Bad Cover ID', author='Author',
+            chapters=[('ch1.xhtml', '<html><body><p>Content with enough text.</p></body></html>')],
+            cover_meta_id='nonexistent-id',
+        )
         out_dir = os.path.join(tmp_dir, 'bad_id_out')
         result = process_epub(epub_path, out_dir)
         assert len(result.spine) >= 1
 
     def test_cover_from_opf_meta_content(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'opf_cover.epub')
-        book = epub.EpubBook()
-        book.set_identifier('opf-id')
-        book.set_title('OPF Cover')
-        book.set_language('en')
-
-        img = epub.EpubImage()
-        img.file_name = 'images/cover.jpg'
-        img.media_type = 'image/jpeg'
-        img.content = b'\xff\xd8\xff\xe0' + b'\x00' * 100
-        img.id = 'cover-img'
-        book.add_item(img)
-
-        book.add_metadata('OPF', 'meta', '', {'name': 'cover', 'content': 'cover-img'})
-
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content with enough text to pass.</p></body></html>'
-        book.add_item(c)
-
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='OPF Cover', author='Author',
+            chapters=[('ch1.xhtml', '<html><body><p>Content with enough text to pass.</p></body></html>')],
+            images=[('images/cover.jpg', b'\xff\xd8\xff\xe0' + b'\x00' * 100, 'image/jpeg')],
+            cover_meta_id='img0',
+        )
         out_dir = os.path.join(tmp_dir, 'opf_out')
         result = process_epub(epub_path, out_dir)
         assert len(result.spine) >= 1
 
     def test_cover_image_error_handling(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'cover_err.epub')
-        book = epub.EpubBook()
-        book.set_identifier('cover-err-id')
-        book.set_title('Cover Err Book')
-        book.set_language('en')
-
-        img = epub.EpubImage()
-        img.file_name = 'images/bad_cover.jpg'
-        img.media_type = 'image/jpeg'
-        img.content = b'\xff\xd8\xff\xe0' + b'\x00' * 50
-        book.add_item(img)
-
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content with enough text to pass the minimum length check for chapters.</p></body></html>'
-        book.add_item(c)
-
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='Cover Err Book', author='Author',
+            chapters=[('ch1.xhtml', '<html><body><p>Content with enough text to pass the minimum length check for chapters.</p></body></html>')],
+            images=[('images/bad_cover.jpg', b'\xff\xd8\xff\xe0' + b'\x00' * 50, 'image/jpeg')],
+        )
         out_dir = os.path.join(tmp_dir, 'cover_err_out')
         result = process_epub(epub_path, out_dir)
         assert len(result.spine) >= 1
 
     def test_nav_skipped_in_nonspine(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'nav_skip.epub')
-        book = epub.EpubBook()
-        book.set_identifier('nav-skip-id')
-        book.set_title('Nav Skip')
-        book.set_language('en')
-
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content with enough text to pass.</p></body></html>'
-        book.add_item(c)
-
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='Nav Skip', author='Author',
+            chapters=[('ch1.xhtml', '<html><body><p>Content with enough text to pass.</p></body></html>')],
+            nav='<html><body><nav epub:type="toc"><ol><li><a href="ch1.xhtml">Ch1</a></li></ol></nav></body></html>',
+        )
         out_dir = os.path.join(tmp_dir, 'nav_out')
         result = process_epub(epub_path, out_dir)
         assert len(result.spine) >= 1
 
     def test_short_doc_after_first(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'short_doc.epub')
-        book = epub.EpubBook()
-        book.set_identifier('short-doc-id')
-        book.set_title('Short Doc')
-        book.set_language('en')
-
-        long = epub.EpubHtml(title='Long', file_name='long.xhtml', lang='en')
-        long.content = b'<html><body><p>' + b'word ' * 30 + b'</p></body></html>'
-        book.add_item(long)
-
-        short = epub.EpubHtml(title='Short', file_name='short.xhtml', lang='en')
-        short.content = b'<p>X</p>'
-        book.add_item(short)
-
-        book.toc = [epub.Link('long.xhtml', 'Long', 'long'),
-                    epub.Link('short.xhtml', 'Short', 'short')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [long, short]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='Short Doc', author='Author',
+            chapters=[
+                ('long.xhtml', '<html><body><p>' + 'word ' * 30 + '</p></body></html>'),
+                ('short.xhtml', '<p>X</p>'),
+            ],
+        )
         out_dir = os.path.join(tmp_dir, 'short_out')
         result = process_epub(epub_path, out_dir)
         assert len(result.spine) >= 1
 
     def test_image_src_full_path(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'img_remap.epub')
-        book = epub.EpubBook()
-        book.set_identifier('img-remap-id')
-        book.set_title('Img Remap')
-        book.set_language('en')
-
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><img src="../images/photo.jpg"/><p>Content with enough text.</p></body></html>'
-        book.add_item(c)
-
-        img = epub.EpubImage()
-        img.file_name = 'images/photo.jpg'
-        img.media_type = 'image/jpeg'
-        img.content = b'\xff\xd8\xff\xe0' + b'\x00' * 50
-        book.add_item(img)
-
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='Img Remap', author='Author',
+            chapters=[('ch1.xhtml', '<html><body><img src="../images/photo.jpg"/><p>Content with enough text.</p></body></html>')],
+            images=[('images/photo.jpg', b'\xff\xd8\xff\xe0' + b'\x00' * 50, 'image/jpeg')],
+        )
         out_dir = os.path.join(tmp_dir, 'remap_out')
         result = process_epub(epub_path, out_dir)
         assert 'images/photo.jpg' in result.spine[0].content
 
     def test_no_body_uses_soup(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'nobody.epub')
-        book = epub.EpubBook()
-        book.set_identifier('nobody-id')
-        book.set_title('NoBody')
-        book.set_language('en')
-
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<div><p>No body tag but enough content to pass.</p></div>'
-        book.add_item(c)
-
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='NoBody', author='Author',
+            chapters=[('ch1.xhtml', '<div><p>No body tag but enough content to pass.</p></div>')],
+        )
         out_dir = os.path.join(tmp_dir, 'nobody_out')
         result = process_epub(epub_path, out_dir)
         assert len(result.spine) >= 1
 
     def test_image_path_normalization(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'img_test.epub')
-        book = epub.EpubBook()
-        book.set_identifier('img-test')
-        book.set_title('Image Test')
-        book.set_language('en')
-
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><img src="../images/test.jpg"/><p>Content here.</p></body></html>'
-        book.add_item(c)
-
-        img = epub.EpubImage()
-        img.file_name = 'images/test.jpg'
-        img.media_type = 'image/jpeg'
-        img.content = b'\xff\xd8\xff\xe0' + b'\x00' * 50
-        book.add_item(img)
-
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='Image Test', author='Author',
+            chapters=[('ch1.xhtml', '<html><body><img src="../images/test.jpg"/><p>Content here.</p></body></html>')],
+            images=[('images/test.jpg', b'\xff\xd8\xff\xe0' + b'\x00' * 50, 'image/jpeg')],
+        )
         out_dir = os.path.join(tmp_dir, 'img_output')
         result = process_epub(epub_path, out_dir)
         assert len(result.spine) == 1
@@ -706,27 +595,12 @@ class TestProcessEpub:
 
     def test_image_write_error(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'img_err.epub')
-        book = epub.EpubBook()
-        book.set_identifier('img-err-id')
-        book.set_title('Image Error')
-        book.set_language('en')
-
-        img = epub.EpubImage()
-        img.file_name = 'images/test.jpg'
-        img.media_type = 'image/jpeg'
-        img.content = b'\xff\xd8\xff\xe0' + b'\x00' * 100
-        book.add_item(img)
-
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>Content with enough text.</p></body></html>'
-        book.add_item(c)
-
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='Image Error', author='Author',
+            chapters=[('ch1.xhtml', '<html><body><p>Content with enough text.</p></body></html>')],
+            images=[('images/test.jpg', b'\xff\xd8\xff\xe0' + b'\x00' * 100, 'image/jpeg')],
+        )
         out_dir = os.path.join(tmp_dir, 'img_err_out')
         os.makedirs(out_dir, exist_ok=True)
         result = process_epub(epub_path, out_dir)
@@ -734,25 +608,14 @@ class TestProcessEpub:
 
     def test_chapter_error_continues(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'ch_err.epub')
-        book = epub.EpubBook()
-        book.set_identifier('ch-err-id')
-        book.set_title('Chapter Error')
-        book.set_language('en')
-
-        good = epub.EpubHtml(title='Good', file_name='good.xhtml', lang='en')
-        good.content = b'<html><body><p>Good chapter with enough text.</p></body></html>'
-        book.add_item(good)
-
-        bad = epub.EpubHtml(title='Bad', file_name='bad.xhtml', lang='en')
-        bad.content = b'<html><body><p>Bad chapter.</p></body></html>'
-        book.add_item(bad)
-
-        book.toc = [epub.Link('good.xhtml', 'Good', 'good'), epub.Link('bad.xhtml', 'Bad', 'bad')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [good, bad]
-        epub.write_epub(epub_path, book, {})
-
+        _write_epub(
+            epub_path,
+            title='Chapter Error', author='Author',
+            chapters=[
+                ('good.xhtml', '<html><body><p>Good chapter with enough text.</p></body></html>'),
+                ('bad.xhtml', '<html><body><p>Bad chapter.</p></body></html>'),
+            ],
+        )
         out_dir = os.path.join(tmp_dir, 'ch_err_out')
         result = process_epub(epub_path, out_dir)
         assert len(result.spine) >= 1
@@ -810,7 +673,7 @@ class TestDataClasses:
 class TestCLI:
     def test_cli_no_args(self):
         result = subprocess.run(
-            ['uv', 'run', 'python', 'reader3.py'],
+            [sys.executable, 'reader3.py'],
             capture_output=True, text=True,
             cwd=os.path.join(os.path.dirname(__file__), '..')
         )
@@ -819,7 +682,7 @@ class TestCLI:
 
     def test_cli_nonexistent_file(self):
         result = subprocess.run(
-            ['uv', 'run', 'python', 'reader3.py', '/nonexistent/file.epub'],
+            [sys.executable, 'reader3.py', '/nonexistent/file.epub'],
             capture_output=True, text=True,
             cwd=os.path.join(os.path.dirname(__file__), '..')
         )
@@ -836,18 +699,11 @@ class TestCLI:
 
     def test_cli_with_epub(self, tmp_dir):
         epub_path = os.path.join(tmp_dir, 'cli_test.epub')
-        book = epub.EpubBook()
-        book.set_identifier('cli-id')
-        book.set_title('CLI Test')
-        book.set_language('en')
-        c = epub.EpubHtml(title='Ch1', file_name='ch1.xhtml', lang='en')
-        c.content = b'<html><body><p>CLI test content.</p></body></html>'
-        book.add_item(c)
-        book.toc = [epub.Link('ch1.xhtml', 'Ch1', 'ch1')]
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = [c]
-        epub.write_epub(epub_path, book, {})
+        _write_epub(
+            epub_path,
+            title='CLI Test', author='Author',
+            chapters=[('ch1.xhtml', '<html><body><p>CLI test content.</p></body></html>')],
+        )
 
         old_argv = sys.argv[:]
         sys.argv = ['reader3.py', epub_path]

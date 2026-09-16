@@ -75,4 +75,6 @@ uv run server.py
 詳細な設定手順（オフライン辞書のダウンロード、マルチデバイスアクセス、ポート設定）については、[ユーザーガイド](docs/GUIDE.md)を参照してください。
 
 ## 📄 ライセンス
-[MIT License](LICENSE)
+[GNU AGPL-3.0 ライセンス](LICENSE)
+
+> 本プロジェクトは [PyMuPDF](https://github.com/pymupdf/PyMuPDF)（AGPL-3.0）を統合しているため、AGPL-3.0 で配布されます。第三者ライセンスについては [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) をご覧ください。
