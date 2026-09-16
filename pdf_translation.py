@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-ENGINE_VERSION = "structured-10"
+ENGINE_VERSION = "structured-19"
 PDF_LOCK = threading.RLock()  # Serialize operations in this pipeline.
 SIGNALS = re.compile(r"\b(?:VCC|VDD|VSS|GND|VIN|VOUT|IOUT|ICC|CLK|SPI|CMOS|TTL)\b|"
                      r"/?[A-Za-z][A-Za-z0-9_]*\d[A-Za-z0-9_]*|/[A-Z]+\b")
@@ -22,6 +22,29 @@ NUMBERS = re.compile(r"[-+±−]?\d+(?:\.\d+)?")
 UNITS = re.compile(r"\b(?:[munpkM]?A|[munpkM]?V|[munpkM]?W|[munpkM]?F|[munp]?s|Hz|MHz|GHz)\b")
 INLINE_MARKS = '\u00ae\u00a9\u2122'
 IDENTIFIER_HEADERS = {'symbol', 'code', 'pin name', 'signal name', 'port name', 'signal', 'port'}
+# "1." and "\u2022" sit left of the sentence they introduce, so a line is aligned
+# on the offset where its body text starts, not on the marker itself.
+LIST_MARKERS = {'\u2022', '\u25aa', '\u25e6', '\u00b7', '\u2023', '-'}
+NOTE_LABEL = re.compile(r'\d{1,2}[.)]')
+# 编号标签也会作为普通文本送给模型，句点在那里容易变成中文句号。
+# 把标签和正文绑成一个标记，编号就能原样往返。
+NOTE_LABEL_GLUE = re.compile(r'(?<![\d.])\d{1,2}\.(?=\s)')
+ERASE_INSET = .03  # 让删除矩形避开水平相邻的字形。
+# 模型对纯标识符会原样返回，这代表无需改动，不该报成「待翻译」。
+# 只有短的单行文本适用，长句原样返回仍视为未翻译。
+ECHO_MAX = 24
+# 模型判定「本条无需翻译」时给出的标记。接口名、HDL 泛型名一旦被表格提取
+# 改写成普通词组，语法上无从区分，只能由模型读上下文决定。
+SKIP_TOKEN = '__SKIP__'
+# 英文数词写成阿拉伯数字是正常翻译（"a one in any location" → "任意位置为 1"），
+# 校验数字时要把这类等价值一起计入，否则整段译文会被误判为篡改数值。
+NUMBER_WORDS = {'zero': 0, 'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10, 'eleven': 11,
+                'twelve': 12, 'thirteen': 13, 'fourteen': 14, 'fifteen': 15,
+                'sixteen': 16, 'seventeen': 17, 'eighteen': 18, 'nineteen': 19,
+                'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50, 'sixty': 60,
+                'seventy': 70, 'eighty': 80, 'ninety': 90, 'hundred': 100, 'thousand': 1000}
+NUMBER_WORD = re.compile(r'\b(' + '|'.join(NUMBER_WORDS) + r')\b', re.I)
 
 
 def needs_translation(text: str) -> bool:
@@ -77,13 +100,77 @@ def _line_structure(line: dict, spans: list[dict]) -> dict:
             'baseline': main['origin'][1], 'font': main['font'], 'font_size': main['size']}
 
 
+def _body_left(spans: list[dict]) -> tuple[float, bool]:
+    """Left edge of a line's body text, and whether a list marker was skipped.
+
+    A note label such as "1." is laid out with a hanging indent, so the line
+    that carries it starts left of every continuation line. Aligning raw left
+    edges would keep such a note split into single lines, and a one-line region
+    is exactly the region most likely to be blocked by a neighbouring glyph.
+    """
+    line_left = _union(spans).x0
+    first = spans[0]
+    marker = first['text'].strip()
+    if len(spans) > 1 and (marker in LIST_MARKERS or NOTE_LABEL.fullmatch(marker)):
+        return spans[1]['bbox'][0], True
+    # Other generators keep the label inside the text span.
+    matched = re.match(rf'(?:[{re.escape("".join(LIST_MARKERS))}]|\d{{1,2}}[.)])\s+', first['text'])
+    if matched:
+        chars = first['chars']
+        body = next((i for i, c in enumerate(chars[matched.end():], matched.end())
+                     if not c['c'].isspace()), len(chars))
+        if body < len(chars):
+            return chars[body]['bbox'][0], True
+    return line_left, False
+
+
+def _marker_positions(lines: list[dict]) -> list[tuple[float, float, float]]:
+    """Locate bullet glyphs, which many generators emit as their own text line.
+
+    Their following line is the first line of an item, not a continuation of
+    the item above it, and nothing inside that line reveals the difference.
+    """
+    positions = []
+    for line in lines:
+        spans = line.get('spans') or []
+        if not spans:
+            continue
+        text = ''.join(s['text'] for s in spans).strip()
+        if text in LIST_MARKERS or NOTE_LABEL.fullmatch(text):
+            box = _union(spans)
+            positions.append((box.x1, box.y0, box.y1))
+    return positions
+
+
+def _opens_item(structure: dict, markers: list[tuple[float, float, float]]) -> bool:
+    box = fitz.Rect(structure['bbox'])
+    size = structure['font_size']
+    # The marker must sit immediately left of this line and on its baseline;
+    # a bullet in the neighbouring column must not split this column's items.
+    return any(edge <= box.x0 + size * .5 and top < structure['baseline'] and bottom > structure['baseline']
+               for edge, top, bottom in markers)
+
+
+def _line_structure(line: dict, spans: list[dict]) -> dict:
+    body = [s for s in spans if s['text'].strip() not in INLINE_MARKS] or spans
+    main = max(body, key=lambda s: len(s['text']))
+    left, marked = _body_left(spans)
+    return {'block': line['block'], 'bbox': _rect(_union(spans)), 'body_left': left, 'marked': marked,
+            'baseline': main['origin'][1], 'font': main['font'], 'font_size': main['size']}
+
+
 def _continues_paragraph(previous: dict, current: dict, lines: list[dict], rules: list) -> bool:
     """Use native block membership, baselines and separators, including short tails."""
     last, first = previous['lines'][-1], current['lines'][0]
+    if first.get('marked'):
+        # A marker opens an item; only the unmarked lines that follow it are
+        # continuations of this paragraph.
+        return False
     left, right = fitz.Rect(last['bbox']), fitz.Rect(first['bbox'])
     size = first['font_size']
     pitch = first['baseline'] - last['baseline']
-    if (abs(left.x0 - right.x0) > size * .2 or abs(last['font_size'] - size) > .5
+    if (abs(last.get('body_left', left.x0) - first.get('body_left', right.x0)) > size * .2
+            or abs(last['font_size'] - size) > .5
             or last['font'] != first['font'] or not size * .8 <= pitch <= size * 1.55):
         return False
     if (last['block'] != first['block']
@@ -108,6 +195,45 @@ def _continues_paragraph(previous: dict, current: dict, lines: list[dict], rules
 def _translation_markup(target: str) -> str:
     escaped = html.escape(target)
     return re.sub(f'[{INLINE_MARKS}]', r'<sup>\g<0></sup>', escaped)
+
+
+def _line_boxes(region: dict, left: float, right: float, bottom: float,
+                count: int | None = None) -> list[fitz.Rect] | None:
+    """按原始行盒切分多行区域，使每一项各自独占一行。
+
+    当作连续文本流排版时，行边界会被抹掉：目录里「… 84」之后的空间会接着排
+    下一条目的行首，于是「仿真设计概述」的头两个字被拉到上一行末尾。逐行给
+    出各自的行盒即可恢复原有的行结构。
+
+    盒顶沿用该行自己的 ``y0``，使基线落在原位置；盒底取与下一行的中点，既
+    不重叠也不留缝。末行沿用区域的底边，保留原先向空白处的扩展。
+
+    ``count`` 给出译文实际行数。中文比英文紧凑，同样内容常少占若干行；此时把
+    这些行**均匀分布**到原文的行跨度内，段落仍锚定在原位置（首行与末行都不
+    移动），只是不再把省下的行数全部堆成底部空白。行数相同则逐行一一对应。
+    """
+    lines = region.get('lines') or []
+    if len(lines) < 2:
+        return None
+    count = len(lines) if count is None else count
+    if count <= 0:
+        return None
+    if count == len(lines):
+        boxes = []
+        for index, line in enumerate(lines):
+            top = line['bbox'][1]
+            if index + 1 < len(lines):
+                base = (line['bbox'][3] + lines[index + 1]['bbox'][1]) / 2
+            else:
+                base = bottom
+            boxes.append(fitz.Rect(left, top, right, base))
+        return boxes
+    # 译文行数不同：按等分跨度铺开，让整段高度被均匀利用。
+    top = lines[0]['bbox'][1]
+    span_bottom = lines[-1]['bbox'][3] if count < len(lines) else bottom
+    step = (span_bottom - top) / count
+    return [fitz.Rect(left, top + index * step, right, top + (index + 1) * step)
+            for index in range(count)]
 
 
 def analyze_page(pdf_path: str, page_number: int) -> dict:
@@ -171,6 +297,8 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
             return {'page': page_number, 'regions': [], 'tables': [], 'warnings': [
                 {'reason': '表格结构识别失败，保留原页，等待版面检查。'}]}
         table_boxes = []
+        # 先登记每张表的网格：嵌套表格要一起判断，才能让外层跳过内层已覆盖的文字。
+        grids = []
         for ti, table in enumerate(detected):
             if table.row_count < 2 or table.col_count < 2:
                 continue
@@ -183,17 +311,27 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
                 continue
             grid_cells = [fitz.Rect(c) for ri, row in enumerate(table.rows) if ri in grid_rows
                           for c in row.cells if c is not None]
-            table_boxes.extend(grid_cells)
             grid_box = fitz.Rect(grid_cells[0])
             for cell in grid_cells[1:]:
                 grid_box |= cell
-            tables.append({'id': f't{ti}', 'rows': len(grid_rows), 'cols': table.col_count,
-                           'bbox': _rect(grid_box), 'source': [data[ri] for ri in sorted(grid_rows)]})
+            grids.append({'id': f't{ti}', 'data': data, 'rows': table.rows, 'grid_rows': grid_rows,
+                          'cells': grid_cells, 'grid_box': grid_box, 'cols': table.col_count})
+        table_boxes = [box for grid in grids for box in grid['cells']]
+        for grid in grids:
+            data, grid_rows = grid['data'], grid['grid_rows']
+            tables.append({'id': grid['id'], 'rows': len(grid_rows), 'cols': grid['cols'],
+                           'bbox': _rect(grid['grid_box']),
+                           'source': [data[ri] for ri in sorted(grid_rows)]})
+            # 本表内部嵌着哪些表。外层合并单元格会把内层表的所有文字再收集一遍，
+            # 两者各自翻译后渲染到重叠坐标，页面上就出现叠字；内层表会独立处理
+            # 这些文字，所以外层必须跳过完全落在内层表里的单元格。
+            nested = [other['grid_box'] for other in grids
+                      if other is not grid and grid['grid_box'].contains(other['grid_box'])]
             first_row = min(grid_rows)
             symbol_columns = {ci for ci, value in enumerate(data[first_row])
                               if ' '.join((value or '').lower().split()) in IDENTIFIER_HEADERS}
             seen = set()
-            for ri, row in enumerate(table.rows):
+            for ri, row in enumerate(grid['rows']):
                 if ri not in grid_rows:
                     continue
                 for ci, cell in enumerate(row.cells):
@@ -205,8 +343,22 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
                         fitz.Point((s['bbox'][0] + s['bbox'][2]) / 2,
                                    (s['bbox'][1] + s['bbox'][3]) / 2))]
                     text = data[ri][ci] or ''
+                    # extract() 会把 HDL 参数名里的下划线换成空格
+                    # （C_NO_OF_LANES 变成 "C NO OF LANES"），交给模型就会被当
+                    # 英文词组翻译。原生字符里下划线仍在，优先采用。
+                    native = _cell_text(page, box)
+                    if native:
+                        text = native
                     if ci in symbol_columns and ri > first_row:
                         continue
+                    if cell_spans and nested:
+                        # 去掉属于内层表的文字，外层只翻译自己独有的部分；
+                        # 文本随之重建，避免译文与残留的墨迹对不上。
+                        kept = [s for s in cell_spans
+                                if not any(inner.contains(_union([s])) for inner in nested)]
+                        if len(kept) != len(cell_spans):
+                            cell_spans = kept
+                            text = ' '.join(s['text'].strip() for s in kept)
                     if not cell_spans or not needs_translation(text):
                         continue
                     sizes = [s['size'] for s in cell_spans]
@@ -214,24 +366,25 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
                         continue  # Native formula with subscripts, not prose.
                     # A span crossing a rule is not a trustworthy cell assignment.
                     if any(s['bbox'][0] < box.x0 - 1 or s['bbox'][2] > box.x1 + 1 for s in cell_spans):
-                        region = _region(f't{ti}r{ri}c{ci}', cell_spans, box, 'cell', text)
-                        region.update(table=f't{ti}', placement='deferred')
+                        region = _region(f'{grid["id"]}r{ri}c{ci}', cell_spans, box, 'cell', text)
+                        region.update(table=grid['id'], placement='deferred')
                         regions.append(region)
                         warnings.append({'id': region['id'], 'code': 'uncertain_cell',
                                          'reason': '文字跨越单元格边界，译文单独列出，原页保留原文。'})
                         continue
                     padded = fitz.Rect(box.x0 + 2, box.y0 + 1, box.x1 - 2, box.y1 - 1)
-                    region = _region(f't{ti}r{ri}c{ci}', cell_spans, padded, 'cell', text)
+                    region = _region(f'{grid["id"]}r{ri}c{ci}', cell_spans, padded, 'cell', text)
                     ink = _union(cell_spans)
                     if abs((ink.x0 + ink.x1) / 2 - (box.x0 + box.x1) / 2) < 3:
                         region['align'] = 1
-                    region['table'] = f't{ti}'
+                    region['table'] = grid['id']
                     regions.append(region)
         # Outside ruled tables, use the native lines, not a block that can
         # span independent columns. Merge only aligned consecutive prose.
         prose = []
         seen_ink = set()
         rules = [item for drawing in page.get_drawings() for item in drawing['items'] if item[0] == 'l']
+        markers = _marker_positions(lines)
         for li, line in enumerate(lines):
             ss = [s for s in line['spans'] if s['text'].strip()]
             if not ss:
@@ -246,6 +399,8 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
             text = ' '.join(s['text'].strip() for s in ss)
             sizes = [s['size'] for s in ss]
             structure = _line_structure(line, ss)
+            if _opens_item(structure, markers):
+                structure['marked'] = True
             if not needs_translation(text):
                 # Keep tightly attached technical identifier lines with the
                 # preceding translated heading. Otherwise the untouched line's
@@ -306,7 +461,8 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
 def protect(text: str) -> tuple[str, dict]:
     """Replace numbers and technical identifiers with exact round-trip tokens."""
     tokens = {}
-    pattern = re.compile(f'(?:{SIGNALS.pattern})|(?:{NUMBERS.pattern})|[{INLINE_MARKS}]')
+    pattern = re.compile(f'(?:{NOTE_LABEL_GLUE.pattern})|(?:{SIGNALS.pattern})|'
+                         f'(?:{NUMBERS.pattern})|[{INLINE_MARKS}]')
     def replace(match):
         key = f'__KEEP{len(tokens)}__'
         tokens[key] = match.group()
@@ -315,13 +471,105 @@ def protect(text: str) -> tuple[str, dict]:
 
 
 def restore(target: str, tokens: dict) -> str:
-    if any(target.count(key) != 1 for key in tokens):
-        raise ValueError('protected token missing or duplicated')
+    """Fill protected tokens back in, tolerating a rewritten note label.
+
+    Models sometimes drop a protected ``1.`` label and write ``1。`` in its
+    place. Rebuild the tokens from the original text rather than rejecting an
+    otherwise usable translation: the numbers still match, and the label reads
+    the way the source document prints it.
+    """
+    missing = [key for key in tokens if target.count(key) != 1]
+    if missing:
+        for key in missing:
+            value = tokens[key]
+            if not NOTE_LABEL.fullmatch(value):
+                raise ValueError('protected token missing or duplicated')
+            # 模型可能原样保留 ASCII 句点，也可能改写成全角句号。
+            marker = rf'(?<![\d.]){re.escape(value[0])}\s*[.。．]'
+            if not re.search(marker, target):
+                raise ValueError('protected token missing or duplicated')
+            target = re.sub(marker, lambda _match, key=key: key, target, count=1)
     if set(re.findall(r'__KEEP\d+__', target)) != set(tokens):
         raise ValueError('unexpected protected token')
     for key, value in tokens.items():
         target = target.replace(key, value)
+    # 编号与中文正文之间补回间隔，避免出现「1.有关」这种粘连写法。
+    target = re.sub(r'(\d{1,2}\.)(?=[\u3400-\u9fff])', r'\1 ', target)
     return target.strip()
+
+
+def _kept(target: str, source: str) -> bool:
+    """译文与原文完全一致，说明本条保留原文、不该删除重写。
+
+    这既覆盖模型原样返回的短标识符，也覆盖模型明确判定「无需翻译」的条目
+    （HDL 泛型名、接口名等），后者可能比 ``ECHO_MAX`` 更长。
+    """
+    return target.strip() == source.strip() and bool(target.strip())
+
+
+def _verbatim(target: str, source: str) -> bool:
+    """判断译文是否表示「原文无需改动」，而不是模型漏译。
+
+    模型对 ``Verilog``、``XDC``、``25 MHz`` 这类短标识符会原样返回，这是正确
+    结论：没有可翻译的英文。长句或普通的英文词组被原样返回则仍然是漏译，需要
+    重试。仅凭长度无法区分，因此还要求去掉型号、数值和单位之后不再有英文单词，
+    或者整段只是单独一个词。
+    """
+    stripped = target.strip()
+    if stripped != source.strip() or len(stripped) > ECHO_MAX:
+        return False
+    remainder = UNITS.sub('', NUMBERS.sub('', SIGNALS.sub('', stripped)))
+    return not re.search(r'[A-Za-z]{2,}', remainder) or len(stripped.split()) == 1
+
+
+def _skip_marker(target: str) -> bool:
+    """模型给出的「本条无需翻译」标记。
+
+    与 ``_verbatim`` 不同，这里不要求译文等于原文：接口名、HDL 泛型名这类标识符
+    一旦被表格提取改成普通词组（``C_NO_OF_LANES`` → ``C NO OF LANES``），再看
+    文本就无从判断，只有让模型读上下文才能决定。标记本身不参与排版，命中后
+    改为保留原文在该区域原样不动。
+    """
+    return target.strip().upper() == SKIP_TOKEN
+
+
+def _cell_text(page, box: fitz.Rect) -> str | None:
+    """按原生字符拼出单元格文本，保住 ``extract()`` 会破坏的标识符。
+
+    表格提取把参数名 ``C_NO_OF_LANES`` 的下划线换成了空格，模型因此把它当作
+    英文词组翻译；同一份文字用 span 级字符取回时下划线还在。原生文本含有
+    下划线时以它为准，否则仍用 ``extract()`` 的结果（它能合并跨行文字）。
+    """
+    parts = []
+    for block in page.get_text('rawdict')['blocks']:
+        for line in block.get('lines', []):
+            chars = [c for c in (c for span in line['spans'] for c in span['chars'])
+                     if not c['c'].isspace()]
+            if not chars:
+                continue
+            centre = fitz.Point((chars[0]['bbox'][0] + chars[-1]['bbox'][2]) / 2,
+                                (chars[0]['bbox'][1] + chars[-1]['bbox'][3]) / 2)
+            if box.contains(centre):
+                parts.append((line['bbox'][1], ''.join(c['c'] for c in chars)))
+    if not any('_' in text for _, text in parts):
+        return None
+    return '\n'.join(text for _, text in sorted(parts))
+
+
+def _digits_preserved(source: str, translated: str) -> bool:
+    """数字校验：原文的数字必须保留，译文也不得凭空出现新数字。
+
+    ``a one in any location`` 译作「任意位置为 1」是正常翻译，会让译文多出原文
+    没有的阿拉伯数字。只要这个数字能由原文的英文数词推出就放行；真正的改数
+    （5 变 6）仍然会被拦下。
+    """
+    source_counts = Counter(NUMBERS.findall(source))
+    translated_counts = Counter(NUMBERS.findall(translated))
+    derivable = {str(NUMBER_WORDS[word.lower()]) for word in NUMBER_WORD.findall(source)}
+    for key, count in source_counts.items():
+        if translated_counts[key] < count:
+            return False
+    return all(key in source_counts or key in derivable for key in translated_counts)
 
 
 async def translate_regions(plan: dict, complete) -> tuple[dict, list[dict]]:
@@ -358,6 +606,12 @@ async def translate_regions(plan: dict, complete) -> tuple[dict, list[dict]]:
                           'When fit_feedback is present, rewrite the previous translation more compactly '
                           'without summarizing or dropping meaning, numbers or units. Fragments next to '
                           'native formulas must not repeat or infer the surrounding formula or units. '
+                          f'If an item needs no translation at all, reply exactly "{SKIP_TOKEN}" for it. '
+                          'Do not translate source code identifiers, HDL generic or parameter names, '
+                          'signal or port names, file names, or values that a reader must match against '
+                          'code or a datasheet: reply '
+                          f'"{SKIP_TOKEN}" for those, even when they read like English words. '
+                          'Translate every other item normally. '
                           'Return ONLY a JSON object mapping each requested item id to its translation.\n'
                           + json.dumps(payload, ensure_ascii=False))
                 try:
@@ -384,10 +638,16 @@ async def translate_regions(plan: dict, complete) -> tuple[dict, list[dict]]:
                 failed = []
                 for region in pending:
                     try:
-                        translated = restore(result[region['id']], protected[region['id']][1])
+                        answer = result[region['id']]
+                        if isinstance(answer, str) and _skip_marker(answer):
+                            # 模型判定无需翻译：记为目标值，渲染阶段保留原文不动。
+                            targets[region['id']] = region['source']
+                            continue
+                        translated = restore(answer, protected[region['id']][1])
                         if not re.search(r'[\u3400-\u9fff]', translated):
-                            raise ValueError('no Chinese translation')
-                        if Counter(NUMBERS.findall(translated)) != Counter(NUMBERS.findall(region['source'])):
+                            if not _verbatim(translated, region['source']):
+                                raise ValueError('no Chinese translation')
+                        elif not _digits_preserved(region['source'], translated):
                             raise ValueError('numbers changed')
                         targets[region['id']] = translated
                     except (KeyError, ValueError, TypeError, AttributeError) as exc:
@@ -403,12 +663,76 @@ async def translate_regions(plan: dict, complete) -> tuple[dict, list[dict]]:
                             for r in pending)
     return targets, warnings
 
+def _erase_box(ink) -> fitz.Rect:
+    """Inset a span's reported line box for redaction.
+
+    ``rawdict`` reports a glyph box spanning the full ascender/descender range,
+    while MuPDF removes a glyph when the rectangle meets the glyph's own box,
+    which never leaves the line. The inset keeps a rectangle off horizontally
+    adjacent glyphs without moving the vertical extent.
+    """
+    box = fitz.Rect(ink)
+    return fitz.Rect(box.x0 + ERASE_INSET, box.y0 + ERASE_INSET,
+                     box.x1 - ERASE_INSET, box.y1 - ERASE_INSET)
+
+
+def _glyph_centers(pdf_page) -> Counter:
+    """Count non-space glyphs by character and rounded centre."""
+    counts = Counter()
+    for block in pdf_page.get_text('rawdict')['blocks']:
+        for line in block.get('lines', []):
+            for span in line['spans']:
+                for char in span['chars']:
+                    if char['c'].isspace():
+                        continue
+                    box = fitz.Rect(char['bbox'])
+                    centre = (box.tl + box.br) / 2
+                    counts[(char['c'], round(centre.x, 1), round(centre.y, 1))] += 1
+    return counts
+
+
+def _deletes_neighbour(pdf_path: str, page_number: int, region: dict, owned: list) -> bool:
+    """Ask MuPDF directly whether erasing this region also removes other text.
+
+    Reported glyph boxes cover the whole ascender/descender range, so a
+    geometric guess flags tight leading as a collision even when the real ink
+    has room to spare. Erasing on a scratch copy settles it: whatever disappears
+    outside the regions being replaced would be lost from the page.
+    """
+    with PDF_LOCK, fitz.open(pdf_path) as original, fitz.open() as scratch:
+        scratch.insert_pdf(original, from_page=page_number - 1, to_page=page_number - 1)
+        page = scratch[0]
+        before = _glyph_centers(page)
+        for ink in region['ink']:
+            page.add_redact_annot(_erase_box(ink), fill=False, cross_out=False)
+        page.apply_redactions(images=0, graphics=0, text=0)
+        lost = before - _glyph_centers(page)
+    for key in lost:
+        centre = fitz.Point(key[1], key[2])
+        if not any(box.contains(centre) for box in owned):
+            return True
+    return False
+
 
 def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> dict:
     """Replace only accepted text on a copied page; keep drawings and images."""
     with PDF_LOCK, fitz.open(pdf_path) as original, fitz.open() as result:
         result.insert_pdf(original, from_page=plan['page'] - 1, to_page=plan['page'] - 1)
         page = result[0]
+        # 模型原样返回的短标识符无需改动：既不该删除重写，它的字形也仍是邻居。
+        # 译文与原文一致（含模型明确判定「无需翻译」的条目）保留原文：
+        # 既不该删除重写，它的字形也仍是邻居。
+        keeping = [region['id'] for region in plan['regions']
+                   if targets.get(region['id']) and region.get('placement') != 'deferred'
+                   and _kept(targets[region['id']], region['source'])]
+        # A glyph inside any region that is itself being replaced is not a
+        # neighbour: its own translation takes its place. A raised note marker
+        # after a word, for instance, shares its line with a paragraph that is
+        # rewritten, and its glyph box is wide enough to look like an obstacle.
+        replacing = [fitz.Rect(ink) for region in plan['regions']
+                     if targets.get(region['id']) and region.get('placement') != 'deferred'
+                     and region['id'] not in keeping
+                     for ink in region['ink']]
         accepted, warnings = [], list(plan['warnings'])
         native_boxes = [fitz.Rect(char['bbox']) for block in page.get_text('rawdict')['blocks']
                         for line in block.get('lines', []) for span in line['spans']
@@ -417,6 +741,9 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
         for region in plan['regions']:
             target = targets.get(region['id'])
             if not target or region.get('placement') == 'deferred':
+                continue
+            if region['id'] in keeping:
+                # 模型确认这类短标识符无需改动，原样保留才不会白删再写。
                 continue
             box = fitz.Rect(region['bbox'])
             if region['kind'] == 'prose':
@@ -444,22 +771,82 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
             minimum = min(preferred, max(6, preferred * .8))
             options = None
             # Chinese does not require spaces at Latin/CJK boundaries. Keep
-            # spaces between Latin words and numbers (e.g. "10 20") intact.
-            target = re.sub(r'(?<=[\u3400-\u9fff]) +| +(?=[\u3400-\u9fff])', '', target)
-            markup = _translation_markup(target)
+            # spaces between Latin words and numbers (e.g. "10 20") intact,
+            # and keep the separator after a note label such as "1. 有关".
+            target = re.sub(r'(?<=[\u3400-\u9fff]) +|(?<!\d\.) +(?=[\u3400-\u9fff])', '', target)
             alignment = 'center' if region['align'] == 1 else 'left'
-            # insert_htmlbox injects "body {margin:1px}". A universal selector
-            # does not override its specificity: those 2 pt consumed much of
-            # a dense footnote's line height even for a single Chinese glyph.
-            css = ('body {margin:0;padding:0;}'
-                   f'* {{font-family:sans-serif;font-size:{preferred}pt;line-height:1.05;'
-                   f'margin:0;padding:0;text-align:{alignment};}}'
-                   'sup {font-size:70%;vertical-align:super;}')
-            with fitz.open() as scratch:
-                probe = scratch.new_page(width=page.rect.width, height=page.rect.height)
-                remaining, scale = probe.insert_htmlbox(box, markup, css=css, scale_low=minimum / preferred)
-                if remaining >= 0:
+            # 行距优先沿用原文：多行段落若被压到 1.05 倍行高，中文的下伸部会与
+            # 下一行的上伸部相互重叠，视觉上就是压字。原文行距由相邻基线间距
+            # 给出，取不到时退回原来的紧凑值。
+            baselines = sorted(line['baseline'] for line in region.get('lines') or [])
+            pitches = [later - earlier for earlier, later in zip(baselines, baselines[1:], strict=False)]
+            source_leading = None
+            if pitches:
+                source_leading = min(sorted(pitches)[len(pitches) // 2], preferred * 1.8)
+            leading = source_leading or preferred * 1.05
+
+            def stylesheet(spacing: float) -> str:
+                # insert_htmlbox injects "body {margin:1px}". A universal selector
+                # does not override its specificity: those 2 pt consumed much of
+                # a dense footnote's line height even for a single Chinese glyph.
+                return ('body {margin:0;padding:0;}'
+                        f'* {{font-family:sans-serif;font-size:{preferred}pt;'
+                        f'line-height:{spacing / preferred:.3f};'
+                        f'margin:0;padding:0;text-align:{alignment};}}'
+                        'sup {font-size:70%;vertical-align:super;}')
+
+            css = stylesheet(leading)
+            target_lines = target.split('\n')
+            source_count = len(region.get('lines') or [])
+
+            def attempt(sheet: str, boxes: list[fitz.Rect] | None = None,
+                        texts: list[str] | None = None) -> bool:
+                """按给定样式试排；boxes 给出时逐盒排，否则整段流式排。"""
+                with fitz.open() as scratch:
+                    probe = scratch.new_page(width=page.rect.width, height=page.rect.height)
+                    if boxes:
+                        return all(probe.insert_htmlbox(b, _translation_markup(text), css=sheet,
+                                                        scale_low=minimum / preferred)[0] >= 0
+                                   for b, text in zip(boxes, texts, strict=True))
+                    return probe.insert_htmlbox(box, _translation_markup(target), css=sheet,
+                                                scale_low=minimum / preferred)[0] >= 0
+
+            def flow_rows(sheet: str) -> int:
+                """整段试排，读回译文实际占用行数。"""
+                with fitz.open() as scratch:
+                    probe = scratch.new_page(width=page.rect.width, height=page.rect.height)
+                    if probe.insert_htmlbox(box, _translation_markup(target), css=sheet,
+                                            scale_low=minimum / preferred)[0] < 0:
+                        return 0
+                    return len([line for block in probe.get_text('dict')['blocks']
+                                for line in block.get('lines', [])
+                                if ''.join(s['text'] for s in line['spans']).strip()])
+
+            options = None
+            # 显式换行与原文行数一致时（目录、注解等），逐行盒保住「一行一项」
+            # 的行结构，不让上下两条挤进同一行。
+            if source_count > 1 and len(target_lines) == source_count:
+                boxes = _line_boxes(region, region['bbox'][0], region['bbox'][2], region['bbox'][3])
+                if boxes and attempt(css, boxes, target_lines):
+                    options = {'css': css, 'scale_low': minimum / preferred,
+                               'line_boxes': boxes, 'line_texts': target_lines}
+            if options is None and source_count > 1:
+                # 普通段落交给流式排版，但**按译文行数调整行距铺满原区域**。中文
+                # 比英文紧凑，同样内容常少占若干行；若沿用原文行距，省下的行数
+                # 会全部堆成段落底部空白，几段连排就显得跨段跨距异常大。行距
+                # 上限压在原行距的 1.45 倍以内，避免行间过度松散。
+                rows = flow_rows(css)
+                if rows > 1 and source_count > rows:
+                    need = (box.y1 - baselines[0]) / (rows - 1)
+                    roomy = min(need, (source_leading or leading) * 1.45)
+                    if roomy > leading:
+                        wider = stylesheet(roomy)
+                        if attempt(wider):
+                            options = {'css': wider, 'scale_low': minimum / preferred}
+                if options is None and attempt(css):
                     options = {'css': css, 'scale_low': minimum / preferred}
+            if options is None and attempt(css):
+                options = {'css': css, 'scale_low': minimum / preferred}
             if options is None:
                 warnings.append({'id': region['id'], 'code': 'text_does_not_fit',
                                  'bbox': _rect(box),
@@ -467,10 +854,13 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
                 continue
             # Redaction deletes every glyph intersecting its rectangle, not
             # just glyphs whose centers are inside it. Reject any region that
-            # would also touch a neighboring subscript or another column.
+            # would also touch a neighboring subscript or another column. The
+            # geometric test only decides whether to look; the scratch-page
+            # probe then answers exactly, so tight leading does not block a
+            # replacement that would in fact leave the ink intact.
             ink_boxes = [fitz.Rect(ink) for ink in region['ink']]
-            erase_boxes = [fitz.Rect(b.x0 + .03, b.y0 + .03, b.x1 - .03, b.y1 - .03) for b in ink_boxes]
-            collision = False
+            erase_boxes = [_erase_box(b) for b in ink_boxes]
+            suspicious = False
             for block in page.get_text('rawdict')['blocks']:
                 for line in block.get('lines', []):
                     for span in line['spans']:
@@ -479,10 +869,12 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
                                 continue
                             cb = fitz.Rect(char['bbox'])
                             center = (cb.tl + cb.br) / 2
-                            if (not any(b.contains(center) for b in ink_boxes)
-                                    and any(b.intersects(cb) for b in erase_boxes)):
-                                collision = True
-            if collision:
+                            if (any(b.contains(center) for b in ink_boxes)
+                                    or any(b.contains(center) for b in replacing)):
+                                continue
+                            if any(b.intersects(cb) for b in erase_boxes):
+                                suspicious = True
+            if suspicious and _deletes_neighbour(pdf_path, plan['page'], region, replacing + ink_boxes):
                 warnings.append({'id': region['id'], 'code': 'adjacent_glyph',
                                  'reason': '替换区域接触相邻字符，译文单独列出，原页保留原文。'})
                 continue
@@ -507,15 +899,22 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
         # the rules, coloured backgrounds and adjacent subscripts.
         for region, _, _ in accepted:
             for ink in region['ink']:
-                box = fitz.Rect(ink)
-                box = fitz.Rect(box.x0 + .03, box.y0 + .03, box.x1 - .03, box.y1 - .03)
-                page.add_redact_annot(box, fill=False, cross_out=False)
+                page.add_redact_annot(_erase_box(ink), fill=False, cross_out=False)
         if accepted:
             page.apply_redactions(images=0, graphics=0, text=0)
         for region, target, options in accepted:
-            remaining, scale = page.insert_htmlbox(fitz.Rect(region['bbox']), _translation_markup(target), **options)
-            if remaining < 0:
-                raise ValueError('Measured text failed to render')
+            boxes = options.pop('line_boxes', None)
+            texts = options.pop('line_texts', None)
+            if boxes and texts:
+                for box, text in zip(boxes, texts, strict=True):
+                    remaining, _ = page.insert_htmlbox(box, _translation_markup(text), **options)
+                    if remaining < 0:
+                        raise ValueError('Measured text failed to render')
+            else:
+                remaining, _ = page.insert_htmlbox(
+                    fitz.Rect(region['bbox']), _translation_markup(target), **options)
+                if remaining < 0:
+                    raise ValueError('Measured text failed to render')
         # Structural checks run on the actual PDF, not an HTML mock-up.
         before_drawings = len(original[plan['page'] - 1].get_drawings())
         if len(page.get_drawings()) != before_drawings:
@@ -540,16 +939,26 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
         temporary.replace(out)
         placed = {r['id'] for r, _, _ in accepted}
         reasons = {w['id']: w['reason'] for w in warnings if 'id' in w}
-        details = [{'id': r['id'], 'source': r['source'], 'translation': targets.get(r['id'], ''),
-                    'status': 'placed' if r['id'] in placed else 'unplaced' if targets.get(r['id']) else 'pending',
-                    'reason': reasons.get(r['id'], '' if r['id'] in placed else
-                                          '原页保留原文，译文单独列出。' if targets.get(r['id']) else '译文尚未生成。')}
-                   for r in plan['regions']]
+        details = []
+        for region in plan['regions']:
+            identifier = region['id']
+            if identifier in keeping:
+                status, reason = 'kept', '该标识符无需翻译，原样保留。'
+            elif identifier in placed:
+                status, reason = 'placed', reasons.get(identifier, '')
+            elif targets.get(identifier):
+                status, reason = 'unplaced', reasons.get(identifier, '原页保留原文，译文单独列出。')
+            else:
+                status, reason = 'pending', reasons.get(identifier, '译文尚未生成。')
+            details.append({'id': identifier, 'source': region['source'],
+                            'translation': targets.get(identifier, ''),
+                            'status': status, 'reason': reason})
         translated_count = sum(bool(d['translation']) for d in details)
         return {'page': plan['page'], 'translated': len(accepted), 'candidates': len(plan['regions']),
-                'translation_count': translated_count, 'placement_count': len(accepted),
-                'pending_count': len(details) - translated_count,
-                'unplaced_count': translated_count - len(accepted), 'details': details,
+                'translation_count': translated_count - len(keeping), 'placement_count': len(accepted),
+                'kept_count': len(keeping),
+                'pending_count': len([d for d in details if d['status'] == 'pending']),
+                'unplaced_count': len([d for d in details if d['status'] == 'unplaced']), 'details': details,
                 'tables': [{'rows': t['rows'], 'cols': t['cols']} for t in plan['tables']],
                 'warnings': warnings, 'engine': ENGINE_VERSION}
 

@@ -2872,6 +2872,7 @@
                 const r = cached.report;
                 node.textContent = '第 ' + currentPage + ' 页：已生成译文 ' + r.translation_count + '/' +
                     r.candidates + '；已排入原页 ' + r.placement_count + '/' + r.candidates +
+                    (r.kept_count ? '；' + r.kept_count + ' 项标识符保留原文' : '') +
                     (r.unplaced_count ? '；' + r.unplaced_count + ' 项译文单独列出' : '') +
                     (r.pending_count ? '；' + r.pending_count + ' 项待翻译' : '') +
                     (r.warnings.length ? '；' + r.warnings.length + ' 项待检查' : '');
@@ -2887,7 +2888,7 @@
             document.getElementById('translation-details-title').textContent = '第 ' + currentPage + ' 页译文';
             const body = document.getElementById('translation-details-body');
             body.replaceChildren();
-            const states = { placed: '已排入原页', unplaced: '译文单独列出', pending: '待翻译' };
+            const states = { placed: '已排入原页', unplaced: '译文单独列出', pending: '待翻译', kept: '无需翻译，保留原文' };
             for (const item of report.details || []) {
                 const section = document.createElement('section');
                 section.className = 'translation-detail';

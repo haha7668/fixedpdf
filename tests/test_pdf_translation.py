@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -103,6 +104,131 @@ def test_tight_multiline_prose_merges_before_collision_check(tmp_path):
         assert '技术说明' in text.replace(' ', '')
 
 
+def test_numbered_note_merges_into_one_region(tmp_path):
+    """A note marker sits in a hanging indent; its lines still form one region."""
+    path = tmp_path / 'note.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=400, height=300)
+        page.insert_text((40, 80), '1.  For the supported versions of third-party tools, see the', fontsize=8)
+        page.insert_text((52, 90), 'Vivado Design Suite User Guide: Release Notes, Installation,', fontsize=8)
+        page.insert_text((52, 100), 'and Licensing.', fontsize=8)
+        page.insert_text((40, 130), '2.  Standalone driver details can be found in the Vitis directory', fontsize=8)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    notes = [r for r in plan['regions'] if r['source'].startswith('1.')]
+    assert len(notes) == 1
+    assert notes[0]['source'].count('\n') == 2
+    assert not any(r['source'].startswith('2.') and '\n' in r['source'] for r in plan['regions'])
+
+
+def test_list_marker_opens_a_new_item_and_keeps_its_own_lines(tmp_path):
+    """A bullet on its own line starts an item, and its wrap lines stay with it.
+
+    The marker arrives as a separate text line here, so nothing inside the next
+    line reveals that it begins an item rather than continuing the previous one.
+    Item spacing matches normal leading, which is what makes the confusion real.
+    """
+    path = tmp_path / 'bullets.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=420, height=300)
+        page.insert_text((30, 100), '\u2022', fontsize=10)
+        page.insert_text((46, 100), 'Maximum Payload Size up to 256 bytes', fontsize=10)
+        page.insert_text((46, 112), 'and legacy interrupt support', fontsize=10)
+        page.insert_text((30, 124), '\u2022', fontsize=10)
+        page.insert_text((46, 124), 'PCIe access to memory-mapped AXI4 space', fontsize=10)
+        page.insert_text((46, 136), 'and a second wrapped line', fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    first = [r for r in plan['regions'] if 'Maximum' in r['source']]
+    second = [r for r in plan['regions'] if 'PCIe access' in r['source']]
+    assert len(first) == 1 and len(second) == 1
+    assert 'and legacy interrupt support' in first[0]['source']
+    assert 'and a second wrapped line' in second[0]['source']
+    assert 'PCIe access' not in first[0]['source']
+    assert 'Maximum' not in second[0]['source']
+
+
+def test_inline_list_marker_sets_body_offset():
+    """A marker inside the text span must still move the alignment offset.
+
+    Generators differ: some emit the bullet as its own span, others keep it in
+    the text. Both must report where the body starts, or an item cannot merge
+    with the lines that continue it.
+    """
+    def char(letter, x0, x1):
+        return {'c': letter, 'bbox': (x0, 90, x1, 104)}
+
+    separate = [
+        {'text': '\u2022', 'bbox': (40, 90, 46, 104), 'size': 10, 'chars': [char('\u2022', 40, 46)]},
+        {'text': 'Maximum', 'bbox': (49, 90, 140, 104), 'size': 10, 'chars': [char('M', 49, 58)]},
+    ]
+    assert translation._body_left(separate) == (49, True)
+
+    inline = [{
+        'text': '1.  For the supported', 'bbox': (40, 90, 200, 104), 'size': 8,
+        'chars': [char('1', 40, 44), char('.', 44, 46), char(' ', 46, 48),
+                  char(' ', 48, 50), char('F', 50, 56)],
+    }]
+    assert translation._body_left(inline) == (50, True)
+
+    plain = [{'text': 'Introduction', 'bbox': (40, 90, 140, 104), 'size': 10,
+              'chars': [char('I', 40, 46)]}]
+    assert translation._body_left(plain) == (40, False)
+
+
+def test_tight_leading_does_not_block_a_replaceable_region(tmp_path):
+    """A glyph box spans the full line box, so leading alone must not refuse.
+
+    Two paragraphs at 8 pt on 10 pt leading report overlapping boxes while the
+    real ink is well separated: the descenders stay clear of the next line.
+    Erasing the upper paragraph is safe, and the scratch-page probe must allow
+    it instead of preserving the English text.
+    """
+    path, output = tmp_path / 'leading.pdf', tmp_path / 'leading-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=420, height=320)
+        page.insert_text((40, 200), 'Upper paragraph of test text', fontsize=8)
+        page.insert_text((60, 210), 'Lower separate paragraph', fontsize=8)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    upper = next(r for r in plan['regions'] if 'Upper' in r['source'])
+    lower = next(r for r in plan['regions'] if 'Lower' in r['source'])
+    # The reported boxes really do overlap, which is what used to refuse the
+    # region; the two paragraphs are still separate regions (different indent).
+    assert fitz.Rect(upper['ink'][0]).y1 > fitz.Rect(lower['ink'][0]).y0
+    assert '\n' not in upper['source']
+    # Only the upper paragraph is being replaced, so only its own ink is owned.
+    owned = [fitz.Rect(i) for i in upper['ink']]
+    assert translation._deletes_neighbour(str(path), 1, upper, owned) is False
+    report = translation.render_page(str(path), plan, {upper['id']: '上半段测试文本'}, str(output))
+    assert report['placement_count'] == 1
+    assert not report['warnings']
+    with fitz.open(output) as doc:
+        text = doc[0].get_text()
+        assert 'Upper paragraph' not in text
+        assert 'Lower separate paragraph' in text
+        assert '上半段测试文本' in text.replace(' ', '')
+
+
+def test_scratch_probe_still_refuses_a_real_neighbour_collision(tmp_path):
+    """Exactness must not become permissiveness: real clashes are still caught."""
+    path, output = tmp_path / 'clash.pdf', tmp_path / 'clash-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=420, height=320)
+        page.insert_text((40, 200), 'Upper paragraph of test text', fontsize=8)
+        page.insert_text((40, 210), 'Lower separate paragraph', fontsize=18)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    upper = next(r for r in plan['regions'] if 'Upper' in r['source'])
+    owned = [fitz.Rect(i) for i in upper['ink']]
+    assert translation._deletes_neighbour(str(path), 1, upper, owned) is True
+    report = translation.render_page(str(path), plan, {upper['id']: '上半段测试文本'}, str(output))
+    assert report['placement_count'] == 0
+    assert [w['code'] for w in report['warnings']] == ['adjacent_glyph']
+    with fitz.open(output) as doc:
+        assert 'Upper paragraph of test text' in doc[0].get_text()
+
+
 def test_heading_keeps_attached_technical_identifier_line(tmp_path):
     path, output = tmp_path / 'heading.pdf', tmp_path / 'heading-zh.pdf'
     with fitz.open() as doc:
@@ -143,7 +269,57 @@ def test_short_tail_is_translated_with_its_paragraph(tmp_path):
         assert 'A separate paragraph below.' in doc[0].get_text()
 
 
-def test_trademark_is_inline_content_not_a_formula(tmp_path):
+def test_toc_entries_keep_their_own_lines(tmp_path):
+    """目录的每个条目必须独占一行，不能把下一条目的行首折到上一行末尾。
+
+    整段当作连续文本流排版时，行边界会被抹掉，于是「仿真设计概述」的头两个字
+    被拉到上一行末尾。原文同样是多行、每行一次换行，逐行盒即可恢复该结构。
+    """
+    path, output = tmp_path / 'toc.pdf', tmp_path / 'toc-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=560, height=400)
+        page.insert_text((108, 99), 'Overview . . . . . . . . . . . . . . . . . . . . .  84', fontsize=11)
+        page.insert_text((108, 115), 'Simulation Design Overview . . . . . . . . .  84', fontsize=11)
+        page.insert_text((108, 131), 'Implementation Design Overview . . . . . .  86', fontsize=11)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    region = plan['regions'][0]
+    assert len(region['lines']) == 3
+    assert region['source'].count('\n') == 2
+    report = translation.render_page(str(path), plan, {
+        region['id']: '概述 . . . . . . . . . . . . . . . . . . . . .  84\n'
+                      '仿真设计概述 . . . . . . . . . . . . . . .  84\n'
+                      '实现设计概述 . . . . . . . . . . . . . . .  86'}, str(output))
+    assert report['placement_count'] == 1 and not report['warnings']
+    with fitz.open(output) as doc:
+        rows = [''.join(s['text'] for s in line['spans']).replace(' ', '')
+                for block in doc[0].get_text('dict')['blocks']
+                for line in block.get('lines', [])]
+    # 三个条目各自成行：不能出现「…84仿真」或「…84实现」这类拼接。
+    assert any(row.startswith('概述') for row in rows)
+    assert any(row.startswith('仿真设计概述') for row in rows)
+    assert any(row.startswith('实现设计概述') for row in rows)
+    assert not any('84仿真' in row or '84实现' in row for row in rows)
+
+
+def test_wrapped_translation_falls_back_to_flow_layout(tmp_path):
+    """逐行盒放不下时退回整段排版，宁可重排也不放弃翻译。"""
+    path, output = tmp_path / 'toc-wrap.pdf', tmp_path / 'toc-wrap-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=560, height=400)
+        page.insert_text((108, 99), 'Overview . . . . . . . . .  84', fontsize=11)
+        page.insert_text((108, 115), 'Support . . . . . . . . .  86', fontsize=11)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    region = plan['regions'][0]
+    # 单行盒放不下、整段两行放得下：应退回整段排版而不是判为放不下。
+    left, top, right, bottom = region['bbox']
+    assert translation._line_boxes(region, left, right, bottom) is not None
+    report = translation.render_page(str(path), plan, {region['id']: '中' * 35}, str(output))
+    assert report['placement_count'] == 1 and not report['warnings']
+
+
+
     path, output = tmp_path / 'mark.pdf', tmp_path / 'mark-zh.pdf'
     with fitz.open() as doc:
         page = doc.new_page(width=400, height=300)
@@ -165,6 +341,22 @@ def test_trademark_is_inline_content_not_a_formula(tmp_path):
     with fitz.open(output) as doc:
         assert 'Compatible' not in doc[0].get_text()
         assert '\u00ae' in doc[0].get_text()
+
+
+def test_note_label_space_survives_cjk_space_removal(tmp_path):
+    """编号与中文之间的间隔不能被「去中英空格」规则吞掉。"""
+    path, output = tmp_path / 'note-space.pdf', tmp_path / 'note-space-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=560, height=200)
+        page.insert_text((108, 99), '1.  For the supported versions of tools', fontsize=11)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    region = plan['regions'][0]
+    report = translation.render_page(str(path), plan, {
+        region['id']: '1. 有关支持的第三方工具版本'}, str(output))
+    assert report['placement_count'] == 1
+    with fitz.open(output) as doc:
+        assert '1. 有关' in doc[0].get_text().replace('\u00a0', ' ')
 
 
 def test_paragraphs_respect_columns_and_horizontal_rules(tmp_path):
@@ -293,6 +485,43 @@ async def test_successful_page_never_requests_fit_retry(source, tmp_path):
         str(source), plan, {'t0r0c0': '编号'}, str(tmp_path / 'ready.pdf'), complete)
     assert report['translated'] == 1
     complete.assert_not_called()
+
+
+def test_english_number_words_may_become_digits():
+    """英文数词写成阿拉伯数字是正常翻译，不该被判成篡改数值。
+
+    源文 ``a one in any location`` 译作「任意位置为 1」会让译文多出原文没有的
+    阿拉伯数字；真正的改数（5 变 6）和凭空多出的编号仍须拦下。
+    """
+    assert translation._digits_preserved('A one in any location.', '任意位置为 1。')
+    assert translation._digits_preserved('three lanes', '3 条通道')
+    assert translation._digits_preserved('two devices', '两个器件')
+    assert translation._digits_preserved('Table 2-11 describes', '表 2-11 描述了')
+    assert not translation._digits_preserved('Supply 5 V', '电源 6 V')
+    assert not translation._digits_preserved('Table 2-11', '表 2-11 和 3-4')
+    assert not translation._digits_preserved('Table 2-11', '表 2 11')
+
+
+@pytest.mark.asyncio
+async def test_hyphenated_table_number_survives_translation():
+    """连字符编号紧挨着写成两个标记，模型改写其中一个也不能丢弃整段。"""
+    plan = {'regions': [{'id': 'p35', 'source':
+                         'A one in any location. Table 2-11 describes the register.'}],
+            'tables': []}
+
+    async def answer(prompt, **kwargs):
+        payload = json.loads(prompt.split('\n', 1)[1])
+        source = payload['items'][0]['source']
+        # 模型把 one 写成 1，并原样保留两个紧挨的标记。
+        assert '__KEEP0____KEEP1__' in source
+        return json.dumps({'p35': source.replace('one', '1')
+                           .replace('A ', '任意位置为 ').replace(' in any location', '。')
+                           .replace('Table', '表').replace(' describes the register', ' 描述了该寄存器')}), 'mock'
+
+    targets, warnings = await translation.translate_regions(plan, answer)
+    assert not warnings, warnings
+    assert '2-11' in targets['p35']
+    assert '1' in targets['p35']
 
 
 def test_tokens_roundtrip():
@@ -435,6 +664,142 @@ def test_cache_fingerprint_model_change(source):
     assert translation.fingerprint(str(source), 'a') != translation.fingerprint(str(source), 'b')
 
 
+def test_multiline_paragraph_keeps_original_leading(tmp_path):
+    """多行段落必须沿用原文行距，压到 1.05 倍行高会让下行压住上行。
+
+    原文两行行距 14 pt，若按字号 10 pt 的 1.05 倍排版，行距只剩 10.5 pt，
+    下行的上伸部会与上行的下伸部重叠。判据直接量输出 PDF 的基线间距。
+    """
+    path, output = tmp_path / 'leading.pdf', tmp_path / 'leading-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=520, height=300)
+        page.insert_text((60, 100), 'The bridge supports pending memory mapped', fontsize=10)
+        page.insert_text((60, 114), 'transactions for every configured endpoint.', fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    region = plan['regions'][0]
+    source_pitch = region['lines'][1]['baseline'] - region['lines'][0]['baseline']
+    assert source_pitch > region['font_size'] * 1.2
+    report = translation.render_page(str(path), plan, {
+        region['id']: '该桥支持每个已配置端点的待处理内存映射事务并逐一完成'}, str(output))
+    assert report['placement_count'] == 1 and not report['warnings']
+    with fitz.open(output) as doc:
+        baselines = [line['spans'][0]['origin'][1]
+                     for block in doc[0].get_text('dict')['blocks']
+                     for line in block.get('lines', []) if 85 <= line['bbox'][1] <= 150]
+    assert len(baselines) == 2, f'译文应折成两行: {baselines}'
+    rendered_pitch = baselines[1] - baselines[0]
+    # 沿用原文行距（容差 0.5 pt）；旧行为会得到约 10.5 pt。
+    assert abs(rendered_pitch - source_pitch) < .5, (
+        f'行距未沿用原文: 原文 {source_pitch:.2f} pt，渲染 {rendered_pitch:.2f} pt')
+
+
+def test_hdl_parameter_names_keep_underscores_and_are_skipped(tmp_path):
+    """表格提取会把 HDL 参数名的下划线换成空格，必须按原生字符还原。
+
+    ``C_NO_OF_LANES`` 经 ``extract()`` 变成 ``C NO OF LANES``，模型看到的是
+    普通英文词组就会翻译。原生字符里下划线仍在，应以它为准；模型判定无需
+    翻译时返回跳过标记，该条目保留原文而不是报成待翻译。
+    """
+    path, output = tmp_path / 'params.pdf', tmp_path / 'params-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=400, height=300)
+        for y in (60, 90, 120, 150):
+            page.draw_line((40, y), (360, y))
+        for x in (40, 200, 360):
+            page.draw_line((x, 60), (x, 150))
+        page.insert_text((50, 80), 'Generic', fontsize=10)
+        page.insert_text((210, 80), 'Description', fontsize=10)
+        page.insert_text((50, 110), 'C_NO_OF_LANES', fontsize=10)
+        page.insert_text((210, 110), 'Number of PCIe lanes', fontsize=10)
+        page.insert_text((50, 140), 'C_DEVICE_ID', fontsize=10)
+        page.insert_text((210, 140), 'Device identifier', fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    sources = {r['id']: r['source'] for r in plan['regions']}
+    assert 'C_NO_OF_LANES' in sources.values(), sources
+    assert 'C_DEVICE_ID' in sources.values(), sources
+    assert not any('C NO OF LANES' in text for text in sources.values())
+
+    parameters = [r['id'] for r in plan['regions'] if '_' in r['source']]
+
+    async def answer(prompt, **kwargs):
+        payload = json.loads(prompt.split('\n', 1)[1])
+        assert translation.SKIP_TOKEN in prompt  # 提示词必须交代跳过约定
+        return json.dumps({item['id']: (translation.SKIP_TOKEN if item['id'] in parameters
+                                        else '说明') for item in payload['items']}), 'mock'
+
+    targets, warnings = asyncio.run(translation.translate_regions(plan, answer))
+    assert not warnings
+    assert all(targets[identifier] == sources[identifier] for identifier in parameters)
+    report = translation.render_page(str(path), plan, targets, str(output))
+    assert report['kept_count'] == len(parameters)
+    assert report['pending_count'] == 0
+    with fitz.open(output) as doc:
+        text = doc[0].get_text()
+    for name in ('C_NO_OF_LANES', 'C_DEVICE_ID'):
+        assert name in text
+    assert '说明' in text.replace(' ', '')
+
+
+def test_skip_marker_is_not_a_translation():
+    """跳过标记本身不能被当作译文写入页面。"""
+    assert translation._skip_marker('__SKIP__') is True
+    assert translation._skip_marker(' __skip__ ') is True
+    assert translation._skip_marker('参数') is False
+    assert translation._skip_marker('__KEEP0__') is False
+    assert translation._kept('C_NO_OF_LANES', 'C_NO_OF_LANES') is True
+    assert translation._kept('C 通道数', 'C NO OF LANES') is False
+
+
+def test_nested_table_text_is_translated_once(tmp_path):
+    """嵌套表格里同一段文字只能生成一个区域，否则译文会重叠渲染。
+
+    外层合并单元格会把内层表的文字再收集一遍。两者各自翻译后渲染到重叠
+    坐标，页面上就出现叠字：必须让外层跳过完全落在内层表里的文字。
+    """
+    path, output = tmp_path / 'nested.pdf', tmp_path / 'nested-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=560, height=400)
+        # 外层表：2 行 × 2 列，第 2 行的右侧是一个横跨的合并单元格。
+        for y in (60, 100, 260):
+            page.draw_line((40, y), (520, y))
+        for x in (40, 300, 520):
+            page.draw_line((x, 60), (x, 260))
+        page.insert_text((50, 85), 'Generic', fontsize=10)
+        page.insert_text((310, 85), 'Description', fontsize=10)
+        page.insert_text((50, 180), 'G41', fontsize=10)
+        # 内层表整块落在该合并单元格内部：2 行 × 2 列。
+        for y in (120, 150, 230):
+            page.draw_line((310, y), (510, y))
+        for x in (310, 410, 510):
+            page.draw_line((x, 120), (x, 230))
+        page.insert_text((315, 140), 'Parameter Setting', fontsize=9)
+        page.insert_text((415, 140), 'Result', fontsize=9)
+        page.insert_text((315, 200), 'G1 = Kintex7', fontsize=9)
+        page.insert_text((415, 200), 'G41 = 1 or 2', fontsize=9)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    assert len(plan['tables']) == 2
+    boxes = [(r['id'], fitz.Rect(r['bbox'])) for r in plan['regions']]
+    overlaps = [(a, b) for i, (a, box_a) in enumerate(boxes) for b, box_b in boxes[i + 1:]
+                if box_a.intersects(box_b) and (box_a & box_b).get_area() > 1]
+    assert not overlaps, f'嵌套表格产生了重叠区域: {overlaps}'
+    # 内层表的文字归属内层表，外层合并单元格不再重复收集。
+    inner = {r['source'] for r in plan['regions'] if r.get('table') == 't1'}
+    assert 'Parameter Setting' in inner and 'Result' in inner
+    assert not any('Parameter Setting' in r['source'] and r.get('table') == 't0'
+                   for r in plan['regions'])
+    # 只翻译内层表的文字，成稿里每段文字只出现一次。
+    report = translation.render_page(str(path), plan, {
+        r['id']: '参数设置' if r['source'] == 'Parameter Setting' else '说明'
+        for r in plan['regions'] if r.get('table') == 't1'}, str(output))
+    assert not report['warnings']
+    with fitz.open(output) as doc:
+        text = doc[0].get_text().replace(' ', '')
+    assert text.count('参数设置') == 1
+
+
 def test_page_frame_does_not_swallow_nested_table(tmp_path):
     path = tmp_path / 'framed.pdf'
     with fitz.open() as doc:
@@ -489,6 +854,62 @@ async def test_new_digit_beside_chinese_is_rejected():
 def test_model_identifier_is_not_prose():
     assert not translation.needs_translation('W25Q64BV')
     assert translation.needs_translation('PIN NAME')
+
+
+def test_reference_only_labels_never_enter_the_translation_queue():
+    """编号标签和纯型号/数值无法中文化，留作待翻译只会变成永不消失的噪声。"""
+    assert translation._verbatim('Verilog', 'Verilog') is True
+    assert translation._verbatim('XDC', 'XDC') is True
+    assert translation._verbatim('(1)', '(1)') is True
+    assert translation._verbatim('25 MHz', '25 MHz') is True
+    assert translation._verbatim('Verilog', 'VHDL and Verilog') is False
+    assert translation._verbatim('Device Family', 'Device Family') is False
+    assert translation._verbatim('a longer untranslated sentence that was echoed back',
+                                'a longer untranslated sentence that was echoed back') is False
+
+
+def test_echoed_short_identifier_is_kept_not_pending(source, tmp_path):
+    """模型原样返回短标识符时应判为「无需翻译」，页面不该永远显示待翻译。"""
+    plan = translation.analyze_page(str(source), 1)
+    targets = {'t0r0c0': 'Code', 't0r0c1': '说明'}
+    report = translation.render_page(str(source), plan, targets, str(tmp_path / 'kept.pdf'))
+    details = {d['id']: d for d in report['details']}
+    assert details['t0r0c0']['status'] == 'kept' and report['kept_count'] == 1
+    assert report['pending_count'] == 1 and report['unplaced_count'] == 0
+    assert details['t0r1c1']['status'] == 'pending'
+    assert report['translation_count'] == 1 and report['placement_count'] == 1
+    with fitz.open(tmp_path / 'kept.pdf') as doc:
+        text = doc[0].get_text()
+        assert 'Code' in text and '说明' in text.replace(' ', '')
+
+
+def test_note_label_period_survives_a_chinese_rewrite():
+    """模型常把标签句点写成中文句号，编号必须按原文还原。"""
+    masked, tokens = translation.protect('1. For the supported tools')
+    assert list(tokens.values()) == ['1.'] and '__KEEP0__' in masked
+    assert translation.restore('1。欲了解受支持的工具', tokens) == '1. 欲了解受支持的工具'
+    assert translation.restore('1．欲了解受支持的工具', tokens) == '1. 欲了解受支持的工具'
+    assert translation.restore('1. 欲了解受支持的工具', tokens) == '1. 欲了解受支持的工具'
+    with pytest.raises(ValueError):
+        translation.restore('完全没有编号的译文', tokens)
+
+
+def test_numbered_note_keeps_ascii_period_end_to_end(tmp_path):
+    """端到端：模型把标签写成全角句号时，成稿仍写出原编号。"""
+    path = tmp_path / 'note.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=400, height=200)
+        page.insert_text((40, 80), '1.  For the supported versions of tools', fontsize=8)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+
+    async def answer(prompt, **kwargs):
+        payload = json.loads(prompt.split('\n', 1)[1])
+        return json.dumps({r['id']: '1。有关受支持的工具版本' for r in payload['items']}), 'mock'
+
+    targets, warnings = asyncio.run(translation.translate_regions(plan, answer))
+    assert not warnings
+    assert list(targets.values()) == ['1. 有关受支持的工具版本']
 
 
 def test_same_style_words_merge_but_subscripts_do_not():
