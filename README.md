@@ -1,3 +1,5 @@
+[English](README.en.md) | 简体中文
+
 # Smoothie Reader (Reader3) — AI 文档阅读器
 
 > 一个面向**英文技术手册**（寄存器手册、芯片手册、IP Product Guide、学术论文）的本地部署 AI 双语阅读器。基于开源项目 [Smoothie Reader](https://github.com/Golden0Voyager/smoothie-reader) 深度定制，补齐了 PDF 阅读、双语对照翻译、多模态图片识别、本地模型接入等能力。

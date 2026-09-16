@@ -1,9 +1,9 @@
 # Project Intelligence: Reader3
 
-一个现代化的、支持 AI 交互的 EPUB 阅读器。
+一个现代化的、支持 AI 交互的 EPUB / PDF 双语阅读器。
 
 ## 🧠 项目特有逻辑
-- **核心功能**: 负责 EPUB 全文翻译、内容摘要及 TTS 文本预处理。
+- **核心功能**: 负责 EPUB 全文翻译、PDF 保留版式结构化翻译（`pdf_translation.py`）、内容摘要及 TTS 文本预处理。
 - **音频引擎**: 强制使用 Edge-TTS，见 `tools/` 封装。
 
 ## 📁 隔离规范 (Isolation)

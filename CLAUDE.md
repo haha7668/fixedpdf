@@ -9,15 +9,17 @@
 
 ## 项目简介
 
-本地部署的 AI EPUB 阅读器，集成划词查词、AI 翻译/对话、TTS 朗读、高亮笔记系统。灵感源自 Karpathy 的同名项目，在其基础上深度重构。
+本地部署的 AI 双语阅读器，支持 EPUB 与 PDF，集成划词查词、AI 翻译/对话、TTS 朗读、高亮笔记，以及保留版式的结构化 PDF 翻译。灵感源自 Karpathy 的同名项目，在其基础上深度重构。
 
 ## 架构
 
 | 文件 | 职责 |
 |------|------|
-| `server.py` | FastAPI 后端 — 图书加载、AI 路由（20+ 提供商）、TTS (edge-tts)、Google Translate、ECDICT 词典、EPUB 上传 |
-| `reader3.py` | EPUB 解析模块 |
-| `templates/reader.html` | 阅读器页面（CSS + HTML + JS 单文件） |
+| `server.py` | FastAPI 后端 — 图书加载、AI 路由（20+ 提供商）、TTS (edge-tts)、Google Translate、ECDICT 词典、EPUB/PDF 上传 |
+| `reader3.py` | EPUB 解析模块（标准库 `zipfile` + `xml.etree`，不依赖 EbookLib） |
+| `pdf_translation.py` | 结构化 PDF 翻译核心（原生坐标识别单元格、排字校验、生成 PDF） |
+| `templates/pdf_reader.html` | PDF 阅读器页面（CSS + HTML + JS 单文件） |
+| `templates/reader.html` | EPUB 阅读器页面（CSS + HTML + JS 单文件） |
 | `templates/library.html` | 图书馆页面（封面墙、上传、Apple Books 扫描） |
 | `tools/_md2pdf.py` | 文档转 PDF（Playwright/Chromium），源文件在 `docs/` |
 
@@ -34,7 +36,7 @@ python tools/_md2pdf.py
 ## 开发规范
 
 - **语言**：始终用中文回复
-- **前端**：reader.html 是单文件架构（CSS + HTML + JS），不拆分
+- **前端**：`reader.html` / `pdf_reader.html` 均为单文件架构（CSS + HTML + JS），不拆分
 - **数据存储**：图书数据 `{name}_data/book.pkl`（pickle），高亮笔记在浏览器 localStorage
 - **AI 配置**：`ai_config.json` 存储提供商设置，`.env` 存储 API Key
 

@@ -4,7 +4,7 @@
 
 ## 项目结构与模块组织
 
-项目采用紧凑结构。`server.py` 包含 FastAPI 服务、API 路由、AI 服务商集成、TTS 和书库管理；`reader3.py` 负责将 EPUB 解析为内部书籍模型。浏览器界面位于 `templates/`，每个页面的 HTML、CSS 和 JavaScript 保持在同一文件中。测试位于 `tests/test_server.py` 和 `tests/test_reader3.py`。文档源文件、工具脚本和示例资源分别放在 `docs/`、`tools/` 和 `assets/`。运行时书籍、缓存、词典及 `*_data/` 目录不得提交。
+项目采用紧凑结构。`server.py` 包含 FastAPI 服务、API 路由、AI 服务商集成、TTS 和书库管理；`reader3.py` 负责将 EPUB 解析为内部书籍模型（使用标准库，不依赖 EbookLib）；`pdf_translation.py` 实现保留版式的结构化 PDF 翻译。浏览器界面位于 `templates/`，每个页面的 HTML、CSS 和 JavaScript 保持在同一文件中。测试位于 `tests/test_server.py`、`tests/test_reader3.py` 和 `tests/test_pdf_translation.py`。文档源文件、工具脚本和示例资源分别放在 `docs/`、`tools/` 和 `assets/`。运行时书籍、缓存、词典及 `*_data/` 目录不得提交。
 
 ## 构建、测试与开发命令
 
@@ -26,7 +26,7 @@ Python 使用四空格缩进；函数和变量采用 `snake_case`，类采用 `P
 
 ## 测试规范
 
-测试使用 `pytest`、`pytest-asyncio`、FastAPI `TestClient`、fixtures 和 mocks。测试文件命名为 `test_*.py`，测试类使用 `TestFeature`，测试函数使用 `test_behavior`。解析器、路由、缓存或文件系统行为变更都应添加回归测试。`server` 和 `reader3` 的最低覆盖率要求为 75%。
+测试使用 `pytest`、`pytest-asyncio`、FastAPI `TestClient`、fixtures 和 mocks。测试文件命名为 `test_*.py`，测试类使用 `TestFeature`，测试函数使用 `test_behavior`。解析器、路由、缓存或文件系统行为变更都应添加回归测试。`server`、`reader3` 和 `pdf_translation` 的最低覆盖率要求为 75%。
 
 ## 提交与拉取请求规范
 

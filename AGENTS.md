@@ -4,7 +4,7 @@
 
 ## Project Structure & Module Organization
 
-The application is intentionally compact. `server.py` defines the FastAPI service, API routes, AI-provider integrations, TTS, and library management. `reader3.py` parses EPUB files into the internal book model. Browser UI code lives in the self-contained files under `templates/`; keep the HTML, CSS, and JavaScript for each page together. Tests are in `tests/test_server.py` and `tests/test_reader3.py`. Documentation sources belong in `docs/`, utility scripts in `tools/`, and screenshots or sample media in `assets/`. Runtime books, caches, dictionaries, and generated `*_data/` directories are local artifacts and must not be committed.
+The application is intentionally compact. `server.py` defines the FastAPI service, API routes, AI-provider integrations, TTS, and library management. `reader3.py` parses EPUB files into the internal book model (using the standard library, no EbookLib). `pdf_translation.py` implements structured, layout-preserving PDF translation. Browser UI code lives in the self-contained files under `templates/`; keep the HTML, CSS, and JavaScript for each page together. Tests are in `tests/test_server.py`, `tests/test_reader3.py`, and `tests/test_pdf_translation.py`. Documentation sources belong in `docs/`, utility scripts in `tools/`, and screenshots or sample media in `assets/`. Runtime books, caches, dictionaries, and generated `*_data/` directories are local artifacts and must not be committed.
 
 ## Build, Test, and Development Commands
 
@@ -26,7 +26,7 @@ Follow standard Python conventions: four-space indentation, `snake_case` for fun
 
 ## Testing Guidelines
 
-Tests use `pytest`, `pytest-asyncio`, FastAPI's `TestClient`, fixtures, and mocks. Name files `test_*.py`, classes `TestFeature`, and functions `test_behavior`. Add regression tests for parser changes, routes, caching, and filesystem handling. Coverage is measured across `server` and `reader3`; the configured minimum is 75%.
+Tests use `pytest`, `pytest-asyncio`, FastAPI's `TestClient`, fixtures, and mocks. Name files `test_*.py`, classes `TestFeature`, and functions `test_behavior`. Add regression tests for parser changes, routes, caching, and filesystem handling. Coverage is measured across `server`, `reader3`, and `pdf_translation`; the configured minimum is 75%.
 
 ## Commit & Pull Request Guidelines
 
