@@ -269,6 +269,70 @@ def test_short_tail_is_translated_with_its_paragraph(tmp_path):
         assert 'A separate paragraph below.' in doc[0].get_text()
 
 
+def test_heading_ink_aligns_with_the_source_first_character(tmp_path):
+    """大标题首字符的墨迹要与原文对齐，不能看着像被缩进。
+
+    汉字笔画在字身框内自带左边距，拉丁大写字母的边距小得多；同一盒左边缘下
+    28 pt 的「目录」比「Table of Contents」右约 4 pt。排版时按首字符的边距之差
+    左移补偿，使译文墨迹落在原文墨迹的位置。
+    """
+    assert translation._ink_bearing('目', 28) > translation._ink_bearing('T', 28)
+    assert translation._left_shift('Table of Contents', '目录', 28) > 2
+    assert translation._left_shift('LogiCORE IP Product Guide', 'LogiCORE IP 产品指南', 28) == 0
+    # 首字符相同则无需补偿，避免把正常排版推歪。
+    assert translation._left_shift('Standards', 'Standards', 21) == 0
+
+    path, output = tmp_path / 'toc.pdf', tmp_path / 'toc-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=560, height=300)
+        page.insert_text((54, 100), 'Table of Contents', fontsize=28)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    region = plan['regions'][0]
+    assert region['font_size'] >= 28
+    report = translation.render_page(str(path), plan, {region['id']: '目录'}, str(output))
+    assert report['placement_count'] == 1 and not report['warnings']
+
+    def ink_left(page, clip, scale=10):
+        pix = page.get_pixmap(clip=clip, matrix=fitz.Matrix(scale, scale))
+        width, height, n, samples = pix.width, pix.height, pix.n, pix.samples
+        best = None
+        for y in range(height):
+            for x in range(width):
+                if samples[(y * width + x) * n] < 160:
+                    if best is None or x < best:
+                        best = x
+                    break
+        return None if best is None else clip.x0 + best / scale
+
+    clip = fitz.Rect(44, 60, 200, 115)
+    with fitz.open(path) as before, fitz.open(output) as after:
+        src_ink = ink_left(before[0], clip)
+        out_ink = ink_left(after[0], clip)
+    assert src_ink is not None and out_ink is not None
+    assert abs(out_ink - src_ink) < 1.0, f'标题墨迹未对齐: 原文 {src_ink}, 译文 {out_ink}'
+
+
+def test_small_text_is_not_shifted_by_bearing(tmp_path):
+    """正文不做边距补偿：小字号差异本就很小，补偿反而可能推歪版面。"""
+    path, output = tmp_path / 'body.pdf', tmp_path / 'body-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=560, height=200)
+        page.insert_text((54, 100), 'Memory Map', fontsize=11)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    region = plan['regions'][0]
+    assert region['font_size'] < 14
+    report = translation.render_page(str(path), plan, {region['id']: '内存映射'}, str(output))
+    assert report['placement_count'] == 1
+    with fitz.open(output) as doc:
+        box = fitz.Rect(region['bbox'])
+        lines = [line['bbox'] for block in doc[0].get_text('dict')['blocks']
+                 for line in block.get('lines', [])
+                 if ''.join(s['text'] for s in line['spans']).strip()]
+    assert lines and lines[0][0] >= box.x0 - .5, '正文不应被左移'
+
+
 def test_toc_entries_keep_their_own_lines(tmp_path):
     """目录的每个条目必须独占一行，不能把下一条目的行首折到上一行末尾。
 
@@ -375,6 +439,91 @@ def test_paragraphs_respect_columns_and_horizontal_rules(tmp_path):
     assert all(r['source'].endswith('continued.') for r in descriptions)
     assert all('Separate' not in r['source'] for r in descriptions)
     assert all(not ('Left' in r['source'] and 'Right' in r['source']) for r in plan['regions'])
+
+
+def test_superscript_stays_with_its_line_and_keeps_script_format(tmp_path):
+    """上标必须随整行一起翻译排版，并保持上标格式。
+
+    原文 ``range = 2ⁿ`` 的 ``n`` 是抬高基线的细小字形。若把它当作「混合基线
+    公式」的证据，整行会被拆成碎片分头排版：正文重新排到左边，上标留在原
+    坐标，两者之间裂开一大段空白（第 20 页实测 176 pt）。上标是正文的一部分，
+    应并入整行翻译，并在成稿里仍是角标。
+    """
+    path, output = tmp_path / 'power.pdf', tmp_path / 'power-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=560, height=300)
+        head = 'The range must be a contiguous power of two, such that the range = 2'
+        page.insert_text((60, 100), head, fontsize=9)
+        end = 60 + fitz.get_text_length(head, fontsize=9)
+        page.insert_text((end, 96), 'n', fontsize=7)              # 上标 n
+        page.insert_text((end + 5, 100), ' and the n least bits are zero.', fontsize=9)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    # 整行（含上标）只应形成一个区域，而不是被拆成多个碎片。
+    assert len(plan['regions']) == 1, [(r['id'], r['source']) for r in plan['regions']]
+    region = plan['regions'][0]
+    assert translation.SCRIPT_OPEN in region['source']
+    # 角标标记随整行保护与还原，模型不必理解它的结构。
+    masked, tokens = translation.protect(region['source'])
+    assert any(translation.SCRIPT_OPEN in value for value in tokens.values())
+    assert translation.restore(masked, tokens) == region['source']
+    # 渲染后仍是上标，不会降级成正文；正文与角标之间不再裂开空白。
+    assert '<sup>n</sup>' in translation._translation_markup(region['source'])
+    scripted = ('该范围必须是连续的二次幂，使得范围 = 2'
+                + translation.SCRIPT_OPEN + 'n' + translation.SCRIPT_CLOSE + '且各位为零。')
+    report = translation.render_page(str(path), plan, {region['id']: scripted}, str(output))
+    assert report['placement_count'] == 1 and not report['warnings']
+    with fitz.open(output) as doc:
+        rendered = doc[0].get_text()
+    assert '2' in rendered and '且' in rendered.replace(' ', '')
+    # 上标以更小的字号写出，不与正文同高。
+    sizes = [span['size'] for block in fitz.open(output)[0].get_text('dict')['blocks']
+             for line in block.get('lines', []) for span in line['spans'] if span['text'].strip()]
+    assert min(sizes) < max(sizes) * .95, sizes
+
+
+def test_script_span_detects_only_baseline_shifts():
+    """只有真正偏离基线的细小字形才算角标。
+
+    同基线的小字号（``V_CC`` 那种缩写）不是上标，不该被包成 ``<sup>``；
+    商标符号另有处理，也不重复包裹。
+    """
+    def span(text, size, origin_y, x=100):
+        return {'text': text, 'size': size, 'origin': (x, origin_y),
+                'bbox': (x, origin_y - size, x + len(text) * 4, origin_y),
+                'chars': [{'c': c, 'origin': (x, origin_y),
+                           'bbox': (x, origin_y - size, x + 4, origin_y)} for c in text]}
+
+    assert translation._script_span(span('n', 7.0, 96.0), 9.0, 100.0) is True       # 上标
+    assert translation._script_span(span('i', 7.0, 103.0), 9.0, 100.0) is True      # 下标
+    assert translation._script_span(span('CC', 7.0, 100.0), 9.0, 100.0) is False    # 同基线缩写
+    assert translation._script_span(span('V', 9.0, 100.0), 9.0, 100.0) is False     # 正文
+    assert translation._script_span(span('\u00ae', 6.0, 96.0), 9.0, 100.0) is False  # 商标符号
+
+
+def test_formula_subscript_is_still_kept_native(tmp_path):
+    """公式里的下标（V_CC）仍按原生文字保留，不并入译文。
+
+    那类内容从解码字符串重建不可靠（自定义 Symbol 字体常把 '=' 解成 'e'），
+    而且整行不是自然语言，不该当成可翻译的正文。
+    """
+    path, output = tmp_path / 'formula2.pdf', tmp_path / 'formula2-zh.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page()
+        page.insert_text((40, 80), 'Voltage', fontsize=10)
+        page.insert_text((85, 80), 'V', fontsize=10)
+        page.insert_text((92, 83), 'CC', fontsize=7)
+        page.insert_text((105, 80), '= 5 V', fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    assert all('CC' not in r['source'] for r in plan['regions'])
+    assert all(translation.SCRIPT_OPEN not in r['source'] for r in plan['regions'])
+    report = translation.render_page(str(path), plan,
+                                     {r['id']: '电压' for r in plan['regions']}, str(output))
+    # 原生下标 CC 必须留在页面上，且译文不得把它吞掉。
+    with fitz.open(path) as before, fitz.open(output) as after:
+        assert after[0].search_for('CC') == before[0].search_for('CC') != []
+    assert report['placement_count'] == len(plan['regions'])
 
 
 def test_real_subscript_is_not_folded_into_prose(tmp_path):
