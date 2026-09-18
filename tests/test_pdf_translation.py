@@ -1,5 +1,7 @@
 import asyncio
 import json
+import shutil
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -789,8 +791,106 @@ def test_api_preview_export_cache_and_validation(source, monkeypatch):
         server._structured_pdf_source('..')
 
 
+def test_local_cli_detection_lists_only_installed():
+    """本地 CLI 无需 API Key：只列出本机真正装了的，供用户直接选。"""
+    assert server._PROVIDER_DEFS['cli']['format'] == 'cli'
+    detected = server._detect_local_clis()
+    known_ids = {entry['id'] for entry in server._KNOWN_CLIS}
+    # 探测结果必须是已知 CLI 的子集，且每个都带可直接执行的命令模板。
+    assert {entry['id'] for entry in detected} <= known_ids
+    for entry in detected:
+        assert '{prompt}' in entry['command']
+        assert shutil.which(entry['id']), entry['id']
+    # 每个已知 CLI 都必须交代非交互参数，否则会挂在交互提示上。
+    for entry in server._KNOWN_CLIS:
+        assert '{prompt}' in entry['command'], entry['id']
+
+
+def test_cli_provider_needs_no_api_key(monkeypatch):
+    """cli 服务商按 enabled 判定"已配置"，不要求 API Key。"""
+    monkeypatch.setattr(server, '_ai_config', {
+        'providers': {'cli': {'enabled': True, 'api_key': '', 'format': 'cli',
+                              'cli_command': 'claude --print "{prompt}"'}},
+        'order': ['cli'],
+    })
+    providers = server._get_enabled_providers()
+    assert [p['id'] for p in providers] == ['cli']
+    assert providers[0]['cli_command'] == 'claude --print "{prompt}"'
+
+
+def test_fetch_models_does_not_require_key_for_local_cli():
+    """本地 CLI 与 Ollama 不通过 HTTP 暴露模型，不该被要求 API Key。
+
+    此前 fetch-models 对 cli 也走「无 key 即报错」的分支，设置页点「获取模型」
+    必然失败（No API key provided）；而 CLI 的模型本就由该命令行工具自行管理。
+    """
+    with TestClient(server.app) as client:
+        cli_result = client.post('/api/ai/fetch-models', json={'id': 'cli'}).json()
+        assert 'No API key provided' not in str(cli_result)
+        assert '自行管理' in cli_result.get('error', '')
+        # Ollama 同样无需 key，应进入网络请求阶段而非被 key 校验拦下。
+        ollama_result = client.post('/api/ai/fetch-models', json={'id': 'ollama'}).json()
+        assert 'No API key provided' not in str(ollama_result)
+        # 真实服务商缺 key 仍须拦下，避免误放宽校验。
+        openai_result = client.post('/api/ai/fetch-models', json={'id': 'openai'}).json()
+        assert openai_result.get('error') == 'No API key provided'
+
+
+def test_prefetch_range_control_is_wired():
+    """预翻译范围（前后 N 页）必须可选择、可持久化，并在翻页时生效。
+
+    这是纯前端逻辑，用 HTML 源做静态校验，防止下拉被删或接线断开导致设置失效。
+    """
+    import re
+    html_path = Path(__file__).resolve().parents[1] / 'templates' / 'pdf_reader.html'
+    html = html_path.read_text(encoding='utf-8')
+
+    match = re.search(r'<select[^>]*id="bilingual-range"[^>]*>(.*?)</select>', html, re.S)
+    assert match, '缺少预翻译范围下拉'
+    values = re.findall(r'value="(\d+)"', match.group(1))
+    assert values and values[0] == '0', f'需要包含「不预取」的 0 选项: {values}'
+
+    for label, pattern in {
+        '恢复已保存的范围': r"localStorage\.getItem\('pdf_bilingual_range'\)",
+        '修改时持久化': r"localStorage\.setItem\('pdf_bilingual_range'",
+        '开启翻译时预取': r'this\._request\(currentPage\); this\._prefetchAround\(currentPage\)',
+        '翻页时触发预取': r'window\.Bilingual\?\._onPageChange\(currentPage\)',
+        '按范围取前后页': r'Math\.max\(1, page - this\._range\)',
+        '不越过末页': r'Math\.min\(pageContainers\.length, page \+ this\._range\)',
+    }.items():
+        assert re.search(pattern, html), f'预取范围接线缺失: {label}'
+
+
 def test_selected_model_wins():
     assert server._pick_model({'model': 'chosen', 'default_model': 'default'}) == 'chosen'
+
+
+def test_vision_request_uses_provider_vision_default():
+    """有图片但不能回退到文本模型：DeepSeek 的默认模型不支持图片识别。
+
+    用户在设置里没填「视觉模型」时，旧逻辑会回退到 model（deepseek-flash），
+    请求必然拿到「不支持图片识别」。现在改用服务商自带的视觉默认值。
+    """
+    assert server._PROVIDER_DEFS['deepseek']['vision_model']
+    entry = {'model': 'deepseek-flash', 'default_model': 'deepseek-chat',
+             'vision_model': '', 'default_vision_model': 'deepseek-v4-flash-vision-exp'}
+    assert server._pick_model(entry, images=[b'png']) == 'deepseek-v4-flash-vision-exp'
+    # 用户显式配置时以用户为准。
+    assert server._pick_model(dict(entry, vision_model='mine'), images=[b'png']) == 'mine'
+    # 无图片仍用文本模型，不改变原有行为。
+    assert server._pick_model(entry) == 'deepseek-flash'
+    # 服务商没有视觉默认值时保持原有回退链。
+    plain = {'model': 'text-model', 'default_model': 'fallback'}
+    assert server._pick_model(plain, images=[b'png']) == 'text-model'
+
+
+def test_enabled_providers_expose_vision_default():
+    """运行时的 provider 条目要带上服务商视觉默认值，设置页才能提示它。"""
+    for entry in server._get_enabled_providers():
+        if entry['id'] == 'deepseek':
+            assert entry['default_vision_model'] == 'deepseek-v4-flash-vision-exp'
+            assert server._pick_model(entry, images=[b'png']) == 'deepseek-v4-flash-vision-exp'
+            break
 
 
 def test_api_stores_final_fit_retry_translations(source, monkeypatch):

@@ -4,6 +4,7 @@ import json
 import os
 import pickle
 import re
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -70,7 +71,7 @@ _PROVIDER_DEFS = {
     'openai':      {'name': 'OpenAI',       'base_url': 'https://api.openai.com/v1/',                           'default_model': 'gpt-4o-mini',                    'format': 'openai'},
     'anthropic':   {'name': 'Anthropic',     'base_url': 'https://api.anthropic.com/v1/',                        'default_model': 'claude-sonnet-4-20250514',       'format': 'anthropic'},
     'gemini':      {'name': 'Google Gemini', 'base_url': '',                                                     'default_model': 'gemini-3-flash-preview',               'format': 'gemini'},
-    'deepseek':    {'name': 'DeepSeek',      'base_url': 'https://api.deepseek.com/v1/',                         'default_model': 'deepseek-chat',                  'format': 'openai'},
+    'deepseek':    {'name': 'DeepSeek',      'base_url': 'https://api.deepseek.com/v1/',                         'default_model': 'deepseek-chat',                  'format': 'openai', 'vision_model': 'deepseek-v4-flash-vision-exp'},
     'grok':        {'name': 'Grok (xAI)',    'base_url': 'https://api.x.ai/v1/',                                 'default_model': 'grok-3-mini-fast',               'format': 'openai'},
     'dashscope':   {'name': '阿里云百炼',     'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1/',   'default_model': 'qwen-plus',                      'format': 'openai'},
     'volcengine':  {'name': '火山引擎',       'base_url': 'https://ark.cn-beijing.volces.com/api/v3/',            'default_model': 'doubao-1-5-pro-32k-250115',     'format': 'openai'},
@@ -88,11 +89,36 @@ _PROVIDER_DEFS = {
     'zhipuai':     {'name': '智谱AI',         'base_url': 'https://open.bigmodel.cn/api/paas/v4/',               'default_model': 'glm-4.7-flash',                  'format': 'openai'},
     'modelscope':  {'name': 'ModelScope',    'base_url': 'https://api-inference.modelscope.cn/v1/',             'default_model': 'Qwen/Qwen2.5-72B-Instruct',     'format': 'openai'},
     'ollama':      {'name': 'Ollama (本地)',  'base_url': 'http://localhost:11434/v1',                            'default_model': 'qwen2.5:7b',                     'format': 'openai'},
-    'cli':         {'name': '本地 CLI (Cursor/Codex等)', 'base_url': '',                                           'default_model': '',                               'format': 'cli'},
+    'cli':         {'name': '本地 CLI (自动探测)', 'base_url': '',                                         'default_model': '',                               'format': 'cli'},
     'custom':      {'name': '自定义 (OpenAI 兼容)', 'base_url': '',                                              'default_model': '',                               'format': 'openai'},
 }
 
 _ai_config = {'providers': {}, 'order': []}
+
+# 已知的本地 CLI 及其非交互调用方式。{prompt} 会被替换为实际提示词。
+# 设置页只列出本机真正装了的那些，用户从下拉里挑一个即可，无需手写命令模板。
+_KNOWN_CLIS = (
+    {'id': 'cursor-agent', 'name': 'Cursor Agent', 'command': 'cursor-agent --print "{prompt}"'},
+    {'id': 'claude', 'name': 'Claude Code', 'command': 'claude --print "{prompt}"'},
+    {'id': 'codex', 'name': 'Codex CLI', 'command': 'codex exec "{prompt}"'},
+    {'id': 'gemini', 'name': 'Gemini CLI', 'command': 'gemini -p "{prompt}"'},
+    {'id': 'qwen', 'name': 'Qwen Code', 'command': 'qwen -p "{prompt}"'},
+    {'id': 'opencode', 'name': 'OpenCode', 'command': 'opencode run "{prompt}"'},
+    {'id': 'crush', 'name': 'Crush', 'command': 'crush run "{prompt}"'},
+    {'id': 'goose', 'name': 'Goose', 'command': 'goose run -t "{prompt}"'},
+    {'id': 'copilot', 'name': 'GitHub Copilot CLI', 'command': 'copilot -p "{prompt}"'},
+    {'id': 'aider', 'name': 'Aider', 'command': 'aider --message "{prompt}" --yes'},
+)
+
+
+def _detect_local_clis() -> list[dict]:
+    """探测本机已安装的 CLI，供设置页选择，免去手写命令模板。
+
+    交给 ``shutil.which``：它按 ``PATHEXT`` 解析 Windows 上的 .cmd/.exe，比手动
+    拼接路径可靠。未安装的条目不返回。
+    """
+    return [dict(entry) for entry in _KNOWN_CLIS if shutil.which(entry['id'])]
+
 
 # --- Dictionary Management ---
 _DICT_DIR = os.path.join(APP_DIR, 'dict')
@@ -160,6 +186,7 @@ def _get_enabled_providers():
             'format': defn.get('format', 'openai'),
             'default_model': default_model,
             'vision_model': p.get('vision_model', ''),
+            'default_vision_model': defn.get('vision_model', ''),
             'cli_command': p.get('cli_command', ''),
         }
         if p.get('temperature') is not None:
@@ -187,18 +214,24 @@ def _get_enabled_providers():
                 'model': bmodel,
                 'base_url': defn.get('base_url', ''),
                 'format': defn.get('format', 'openai'),
+                'vision_model': '',
                 'default_model': defn.get('default_model', bmodel),
+                'default_vision_model': defn.get('vision_model', ''),
             })
     return result
 
 
 def _pick_model(p: dict, images=None) -> str:
     """选择实际使用的模型：
-    - 有图片：优先 vision_model（用户单独配置的视觉模型）→ model → default_model
+    - 有图片：vision_model（用户配置的或该服务商的默认视觉模型）→ model → default_model
     - 无图片：用 model → default_model，尊重用户选择
+
+    vision_model 允许为空：部分服务商的默认模型不支持图片，回退到它只会拿到
+    「不支持图片识别」的报错。因此优先用服务商自带的视觉默认值。
     """
     if images:
-        return p.get('vision_model') or p.get('model') or p.get('default_model', '')
+        return (p.get('vision_model') or p.get('default_vision_model')
+                or p.get('model') or p.get('default_model', ''))
     return p.get('model') or p.get('default_model', '')
 
 
@@ -288,9 +321,10 @@ async def _call_gemini(api_key, model_name, prompt, temperature, max_tokens):
 
 
 async def _call_cli(cli_command: str, prompt: str, timeout: int = 600) -> str:
-    """通过本地 CLI（如 cursor-agent、codex）执行 prompt。
-    cli_command 支持 {prompt} 占位符，会被替换为实际 prompt。
-    例如：'cursor-agent --print "{prompt}"' 或 'codex exec "{prompt}"'
+    """通过本地 CLI（如 cursor-agent、claude）执行 prompt。
+
+    cli_command 来自 ``_KNOWN_CLIS``，已带好各自的非交互参数；``{prompt}`` 会被
+    替换为实际 prompt。用户也可以在设置里改写这个模板。
     """
     if not cli_command:
         raise Exception("未配置 CLI 命令模板")
@@ -1426,6 +1460,7 @@ async def get_providers():
             'default_model': defn.get('default_model', ''),
             'default_base_url': defn.get('base_url', ''),
             'vision_model': p.get('vision_model', ''),
+            'default_vision_model': defn.get('vision_model', ''),
             'cli_command': p.get('cli_command', ''),
         }
         if p.get('temperature') is not None:
@@ -1450,7 +1485,9 @@ async def get_providers():
             if pid in builtin_keys and p.get('api_key') == builtin_keys[pid]:
                 continue
             result.append(_entry(pid, p))
-    return {"providers": result, "available": list(_PROVIDER_DEFS.keys()), "task_routing": _ai_config.get('task_routing', {})}
+    return {"providers": result, "available": list(_PROVIDER_DEFS.keys()),
+            "task_routing": _ai_config.get('task_routing', {}),
+            "local_clis": _detect_local_clis()}
 
 
 @app.post("/api/ai/providers")
@@ -1609,9 +1646,14 @@ async def fetch_models(req: dict):
     if not defn and pid.startswith('custom'):
         defn = _PROVIDER_DEFS.get('custom', {})
     fmt = defn.get('format', 'openai')
+    # 本地 CLI 不通过 HTTP 暴露模型列表，其可用模型由 CLI 自身管理
+    if fmt == 'cli':
+        return {"models": [], "error": "本地 CLI 的模型由该命令行工具自行管理，无法列出。"}
     # Fallback to stored key if not provided
     if not api_key and pid in _ai_config.get('providers', {}):
         api_key = _ai_config['providers'][pid].get('api_key', '')
+    if pid in ('ollama', 'cli'):
+        api_key = 'local'  # 本地服务无需 key
     if not api_key:
         return {"models": [], "error": "No API key provided"}
 

@@ -94,7 +94,28 @@
 ### 环境要求
 - Python 3.10+（本仓库验证环境：Python 3.12，Windows）
 
-### 1. 安装依赖（venv + pip）
+### 一、Windows 双击启动（推荐）
+
+直接双击项目根目录的 **`start.bat`**。脚本会依次检查运行环境，缺失的部分给出下载或自动安装选项：
+
+| 检查项 | 缺失时的处理 |
+|--------|--------------|
+| Python 3.10+ | 可打开官方下载页，或用 winget 自动安装 |
+| 虚拟环境 `.venv` | 提供一键创建并安装依赖 |
+| 依赖组件 | 列出缺失的包，提供 `pip install -r requirements.txt` |
+| 服务端口 | 已在运行时直接打开浏览器，避免重复启动 |
+
+启动成功后会自动打开浏览器。**关闭该窗口即停止服务**（或按 Ctrl+C）。
+
+只想检查环境、不启动服务：
+
+```powershell
+start.bat --check
+```
+
+### 二、手动启动（跨平台）
+
+#### 1. 安装依赖（venv + pip）
 
 ```powershell
 cd smoothie-reader
@@ -104,7 +125,7 @@ python -m venv .venv
 
 > 说明：上游使用 `uv`，但本仓库在 Windows 环境已用 `venv + pip` 验证可用。`requirements.txt` 未包含 PyMuPDF，需额外安装。
 
-### 2. 启动服务（Windows 需 UTF-8 模式）
+#### 2. 启动服务（Windows 需 UTF-8 模式）
 
 ```powershell
 $env:PYTHONUTF8=1; $env:PYTHONIOENCODING="utf-8"

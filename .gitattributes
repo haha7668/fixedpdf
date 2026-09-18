@@ -3,3 +3,8 @@
 *.html linguist-detectable=false
 *.css linguist-detectable=false
 *.json linguist-detectable=false
+
+# Windows 批处理必须用 CRLF 检出：LF 行尾会让 cmd 解析出错。
+# start.bat 另以 GBK 保存（与系统 ANSI 一致），因此不能做编码转换。
+*.bat text eol=crlf
+*.cmd text eol=crlf
