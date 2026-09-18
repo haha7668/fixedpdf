@@ -209,11 +209,6 @@
         .chat-bubble.ai { background: color-mix(in srgb, var(--outline) 45%, var(--surface)); color: var(--on-surface); border-bottom-left-radius: 2px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
         .chat-bubble.ai:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.08); transform: translateY(-1px); }
         .chat-bubble.context { background: color-mix(in srgb, var(--primary) 8%, var(--surface)); border-left: 3px solid var(--primary); border-radius: 0 10px 10px 0; color: var(--secondary); font-size: 0.75rem; padding: 10px 14px; font-style: italic; margin-top: 12px; }
-        .chat-bubble .msg-bar { display: flex; gap: 4px; margin-top: 8px; justify-content: flex-end; opacity: 0; transition: opacity 0.15s; }
-        .chat-bubble:hover .msg-bar { opacity: 1; }
-        .msg-bar button { background: none; border: none; padding: 3px; cursor: pointer; color: var(--secondary); border-radius: 4px; transition: 0.15s; }
-        .msg-bar button:hover { color: var(--primary); background: color-mix(in srgb, var(--primary) 8%, transparent); }
-        .msg-bar button svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
         /* Markdown 渲染内容样式（marked 输出） */
         .chat-bubble.ai h1, .chat-bubble.ai h2, .chat-bubble.ai h3, .chat-bubble.ai h4 { margin: 14px 0 8px; line-height: 1.4; color: var(--on-surface); }
@@ -1930,17 +1925,6 @@
             history.appendChild(div);
             document.getElementById('ai-content').scrollTop = document.getElementById('ai-content').scrollHeight;
         },
-        _addDelBtn(bubble, msgId) {
-            const bar = document.createElement('div');
-            bar.className = 'msg-bar';
-            const delBtn = document.createElement('button');
-            delBtn.title = t('Delete');
-            delBtn.innerHTML = '<svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/></svg>';
-            delBtn.onclick = () => this.deleteMessage(msgId);
-            bar.appendChild(delBtn);
-            bubble.appendChild(bar);
-            bubble.dataset.msgId = msgId;
-        },
         _saveMsg(role, html, text) {
             this._ensureSession();
             const msg = { id: ++this._msgId, role, html, ts: Date.now() };
@@ -2018,7 +2002,6 @@
             } else {
                 userDiv.textContent = displayText;
             }
-            this._addDelBtn(userDiv, userMsg.id);
             history.appendChild(userDiv);
 
             // AI bubble (streaming)
@@ -2058,25 +2041,10 @@
             }
 
             const cleanedFinal = fullText.replace(/\n<!--model:.*?-->$/s, '');
-            const aiMsg = this._saveMsg('ai', _md(cleanedFinal), cleanedFinal);
-            this._addDelBtn(aiDiv, aiMsg.id);
+            this._saveMsg('ai', _md(cleanedFinal), cleanedFinal);
             renderMermaid(aiDiv);
 
             this._streaming = false;
-        },
-        deleteMessage(msgId) {
-            const idx = this._messages.findIndex(m => m.id === msgId);
-            if (idx !== -1) this._messages.splice(idx, 1);
-            this._persist();
-            const el = document.querySelector(`[data-msg-id="${msgId}"]`);
-            if (el) { el.style.transition = 'opacity 0.3s, transform 0.3s'; el.style.opacity = '0'; el.style.transform = 'translateX(20px)'; setTimeout(() => el.remove(), 300); }
-            const session = this._currentSession();
-            if (session && session.messages.length === 0) {
-                this._sessions = this._sessions.filter(s => s.id !== session.id);
-                this._activeId = 0; this._messages = [];
-                this._persist();
-                setTimeout(() => { document.getElementById('ai-empty-state').style.display = ''; }, 350);
-            }
         },
         clearChat() {
             if (!confirm(t('Clear all chat history?'))) return;
@@ -2158,7 +2126,6 @@
                 const bubble = document.createElement('div');
                 bubble.className = `chat-bubble ${msg.role}`;
                 bubble.innerHTML = msg.html;
-                this._addDelBtn(bubble, msg.id);
                 history.appendChild(bubble);
                 if (msg.role === 'ai') renderMermaid(bubble);
             });
