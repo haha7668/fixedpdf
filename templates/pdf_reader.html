@@ -1532,9 +1532,17 @@
             });
             document.addEventListener('mousedown', (e) => {
                 if (!toolbar.contains(e.target)) toolbar.classList.remove('visible');
-                if (!lookup.contains(e.target) && !toolbar.contains(e.target)) lookup.classList.remove('visible');
+                if (!lookup.contains(e.target) && !toolbar.contains(e.target)) {
+                    lookup.classList.remove('visible');
+                    // 递增令牌：进行中的翻译返回后不再把弹窗弹回来。
+                    this._lookupToken++;
+                }
             });
-            viewer.addEventListener('scroll', () => { toolbar.classList.remove('visible'); }, { passive: true });
+            viewer.addEventListener('scroll', () => {
+                toolbar.classList.remove('visible');
+                lookup.classList.remove('visible');
+                this._lookupToken++;
+            }, { passive: true });
         },
         _check() {
             const sel = window.getSelection();
@@ -1616,8 +1624,14 @@
             // 直接把选中文本作为问题发送（同时作为上下文，让 AI 结合原文回答）
             AI._send(text, text);
         },
-        closeLookup() { document.getElementById('lookup-popup').classList.remove('visible'); this._draggedPos = null; },
+        closeLookup() {
+            document.getElementById('lookup-popup').classList.remove('visible');
+            this._draggedPos = null;
+            // 递增令牌：正在进行的翻译请求返回后不再重新弹出。
+            this._lookupToken++;
+        },
         _draggedPos: null,
+        _lookupToken: 0,
         _initDrag() {
             const popup = document.getElementById('lookup-popup');
             const handle = document.getElementById('lookup-drag-handle');
@@ -1661,6 +1675,8 @@
         async _doTranslate(text) {
             const el = document.getElementById('lookup-content');
             el.innerHTML = '<div class="lookup-loading">翻译中...</div>';
+            // 记录本次请求：用户中途关掉弹窗后，异步结果回来不该再把它弹出来。
+            const token = ++this._lookupToken;
             this._showLookup();
             try {
                 const resp = await fetch('/api/quick-translate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
@@ -1684,12 +1700,16 @@
                     html += `<div class="lookup-translation">${_escH(data.translation)} ${spk}</div>`;
                 }
                 el.innerHTML = html || '<div class="lookup-loading">无结果</div>';
-                this._showLookup();
-            } catch (e) { el.innerHTML = '<div class="lookup-loading">翻译失败</div>'; }
+                if (token === this._lookupToken) this._showLookup();
+            } catch (e) {
+                el.innerHTML = '<div class="lookup-loading">翻译失败</div>';
+                if (token === this._lookupToken) this._showLookup();
+            }
         },
         async _doLookup(text) {
             const el = document.getElementById('lookup-content');
             el.innerHTML = '<div class="lookup-loading">查询中…</div>';
+            const token = ++this._lookupToken;
             this._showLookup();
             try {
                 const resp = await fetch('/api/ai-explain', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
@@ -1699,8 +1719,11 @@
                 } else {
                     el.innerHTML = '<div class="lookup-explanation" style="opacity:0.5">未获取到解释</div>';
                 }
-                this._showLookup();
-            } catch (e) { el.innerHTML = '<div class="lookup-loading">查询失败</div>'; }
+                if (token === this._lookupToken) this._showLookup();
+            } catch (e) {
+                el.innerHTML = '<div class="lookup-loading">查询失败</div>';
+                if (token === this._lookupToken) this._showLookup();
+            }
         },
         _showLookup() {
             const popup = document.getElementById('lookup-popup');

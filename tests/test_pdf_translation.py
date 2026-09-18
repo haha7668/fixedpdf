@@ -861,6 +861,38 @@ def test_prefetch_range_control_is_wired():
         assert re.search(pattern, html), f'预取范围接线缺失: {label}'
 
 
+def test_lookup_popup_stays_closed_after_user_dismisses_it():
+    """用户关掉翻译卡片后，异步结果返回不能把它重新弹出来。
+
+    此前 _doTranslate/_doLookup 在 fetch 返回后无条件调用 _showLookup()，
+    于是「翻译中」期间点击别处虽然关掉了卡片，结果一到又会弹回来，看起来
+    就是「点其他地方也不消失」。现在用令牌标记本次请求，关闭动作递增令牌，
+    过期请求不再显示。这是纯前端逻辑，用 HTML 源做静态校验。
+    """
+    import re
+    html = (Path(__file__).resolve().parents[1] / 'templates' / 'pdf_reader.html').read_text(encoding='utf-8')
+
+    # 令牌必须在关闭与外部点击时递增，否则过期请求无法被识别。
+    assert re.search(r'_lookupToken:\s*0', html), '缺少令牌初始值'
+    close_body = html[html.index('closeLookup() {'):html.index('closeLookup() {') + 400]
+    assert '_lookupToken++' in close_body, 'closeLookup 未递增令牌'
+
+    # 外部点击与滚动也要递增，覆盖「点别处」与「滚动」两条路径。
+    mousedown = re.search(r"document\.addEventListener\('mousedown'.*?\}\);", html, re.S)
+    assert mousedown and '_lookupToken++' in mousedown.group(0), '外部点击未递增令牌'
+    scroll = re.search(r"viewer\.addEventListener\('scroll', \(\) => \{.*?\}, \{ passive: true \}\)", html, re.S)
+    assert scroll and '_lookupToken++' in scroll.group(0), '滚动未递增令牌'
+
+    # 异步返回处必须校验令牌，而不是无条件显示。
+    for fn in ('_doTranslate', '_doLookup'):
+        start = html.index(f'async {fn}(text)')
+        next_fn = html.find('async _', start + 10)
+        body = html[start:next_fn if next_fn > 0 else start + 4000]
+        assert 'const token = ++this._lookupToken;' in body, f'{fn} 未捕获令牌'
+        assert 'if (token === this._lookupToken) this._showLookup();' in body, \
+            f'{fn} 的异步返回未校验令牌'
+
+
 def test_selected_model_wins():
     assert server._pick_model({'model': 'chosen', 'default_model': 'default'}) == 'chosen'
 
