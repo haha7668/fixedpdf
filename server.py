@@ -35,7 +35,7 @@ import pdf_translation
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 EXE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else RESOURCE_DIR
 if getattr(sys, "frozen", False):
-    APP_DIR = os.path.join(os.getenv("LOCALAPPDATA") or EXE_DIR, "pdf_reader")
+    APP_DIR = os.path.join(os.getenv("LOCALAPPDATA") or EXE_DIR, "fixedpdf")
     os.makedirs(APP_DIR, exist_ok=True)
 else:
     APP_DIR = RESOURCE_DIR
@@ -244,10 +244,10 @@ else:
     print("Warning: No AI providers configured. Add one in Settings or set API keys in .env")
 
 # Google Translate direct API (fast, connection-pooled, independent of AI providers)
-_gt_client = httpx.AsyncClient(timeout=5, http2=False, headers={"User-Agent": "Reader3/1.0"})
+_gt_client = httpx.AsyncClient(timeout=5, http2=False, headers={"User-Agent": "FixedPDF/1.0"})
 
 # Shared httpx pool for AI provider calls (reuse TCP/TLS connections)
-_ai_client = httpx.AsyncClient(timeout=300, trust_env=True, headers={"User-Agent": "Reader3/1.0"})
+_ai_client = httpx.AsyncClient(timeout=300, trust_env=True, headers={"User-Agent": "FixedPDF/1.0"})
 
 
 # --- Unified AI Dispatch ---
@@ -403,7 +403,7 @@ async def _stream_openai_compat(base_url, api_key, model, prompt, temperature, m
     body = {"model": model, "messages": [{"role": "user", "content": _build_user_content(prompt, images)}], "stream": True, "temperature": temperature, "max_tokens": max_tokens}
     if extra_body:
         body.update(extra_body)
-    async with httpx.AsyncClient(timeout=60, trust_env=True, headers={"User-Agent": "Reader3/1.0"}) as client:
+    async with httpx.AsyncClient(timeout=60, trust_env=True, headers={"User-Agent": "FixedPDF/1.0"}) as client:
         async with client.stream("POST", f"{base_url.rstrip('/')}/chat/completions", headers=headers, json=body) as resp:
             if resp.status_code != 200:
                 err = await resp.aread()
@@ -430,7 +430,7 @@ async def _stream_openai_compat(base_url, api_key, model, prompt, temperature, m
 
 async def _stream_anthropic(base_url, api_key, model, prompt, temperature, max_tokens):
     """Streaming async generator for Anthropic Messages API."""
-    async with httpx.AsyncClient(timeout=60, trust_env=True, headers={"User-Agent": "Reader3/1.0"}) as client:
+    async with httpx.AsyncClient(timeout=60, trust_env=True, headers={"User-Agent": "FixedPDF/1.0"}) as client:
         async with client.stream("POST", f"{base_url.rstrip('/')}/messages",
             headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
             json={"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}], "temperature": temperature, "stream": True},
@@ -688,7 +688,7 @@ async def _wiki_summary(term: str) -> dict:
     try:
         encoded = urllib.parse.quote(term)
         url = f'https://{lang}.wikipedia.org/api/rest_v1/page/summary/{encoded}'
-        req = urllib.request.Request(url, headers={'User-Agent': 'Reader3/1.0'})
+        req = urllib.request.Request(url, headers={'User-Agent': 'FixedPDF/1.0'})
         def _fetch():
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())
@@ -1589,7 +1589,7 @@ async def test_provider(req: dict):
 
     try:
         if fmt == 'anthropic':
-            async with httpx.AsyncClient(timeout=15, trust_env=True, headers={"User-Agent": "Reader3/1.0"}) as client:
+            async with httpx.AsyncClient(timeout=15, trust_env=True, headers={"User-Agent": "FixedPDF/1.0"}) as client:
                 resp = await client.post(
                     f"{base_url.rstrip('/')}/messages",
                     headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
@@ -1603,7 +1603,7 @@ async def test_provider(req: dict):
             body = {"model": model_name, "messages": [{"role": "user", "content": "Say ok"}], "max_tokens": 10}
             if pid == 'zhipuai':
                 body["thinking"] = {"type": "disabled"}
-            async with httpx.AsyncClient(timeout=15, trust_env=True, headers={"User-Agent": "Reader3/1.0"}) as client:
+            async with httpx.AsyncClient(timeout=15, trust_env=True, headers={"User-Agent": "FixedPDF/1.0"}) as client:
                 resp = await client.post(f"{base_url.rstrip('/')}/chat/completions", headers=headers, json=body)
                 if resp.status_code != 200:
                     return {"ok": False, "message": _extract_error(resp)}
@@ -1672,14 +1672,14 @@ async def fetch_models(req: dict):
 
     try:
         if fmt == 'anthropic':
-            async with httpx.AsyncClient(timeout=15, trust_env=True, headers={"User-Agent": "Reader3/1.0"}) as client:
+            async with httpx.AsyncClient(timeout=15, trust_env=True, headers={"User-Agent": "FixedPDF/1.0"}) as client:
                 resp = await client.get(f"{base_url.rstrip('/')}/models", headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"})
                 resp.raise_for_status()
                 data = resp.json()
                 models = [m['id'] for m in data.get('data', [])]
                 return {"models": models}
         else:
-            async with httpx.AsyncClient(timeout=15, trust_env=True, headers={"User-Agent": "Reader3/1.0"}) as client:
+            async with httpx.AsyncClient(timeout=15, trust_env=True, headers={"User-Agent": "FixedPDF/1.0"}) as client:
                 resp = await client.get(f"{base_url.rstrip('/')}/models", headers={"Authorization": f"Bearer {api_key}"})
                 resp.raise_for_status()
                 data = resp.json()
@@ -1735,7 +1735,7 @@ async def download_dict(req: dict):
             decomp = zlib.decompressobj(16 + zlib.MAX_WBITS)
 
             def _download():
-                req = urllib.request.Request(gz_url, headers={'User-Agent': 'Reader3/1.0'})
+                req = urllib.request.Request(gz_url, headers={'User-Agent': 'FixedPDF/1.0'})
                 proxy_url = _ai_config.get('proxy', '').strip()
                 if proxy_url:
                     handler = urllib.request.ProxyHandler({
@@ -2946,7 +2946,7 @@ async def search_cover_online(book_id: str, req: dict = None):
     try:
         gurl = f"https://www.googleapis.com/books/v1/volumes?q={urllib.parse.quote(query)}&maxResults=12"
         def _fetch_google():
-            req = urllib.request.Request(gurl, headers={"User-Agent": "Reader3/1.0"})
+            req = urllib.request.Request(gurl, headers={"User-Agent": "FixedPDF/1.0"})
             with urllib.request.urlopen(req, timeout=8) as resp:
                 return json.loads(resp.read())
         data = await asyncio.to_thread(_fetch_google)

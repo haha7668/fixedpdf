@@ -55,7 +55,7 @@ def insert_box(page: pymupdf.Page, rect: pymupdf.Rect, text: str) -> bool:
         result = page.insert_textbox(
             inner,
             text,
-            fontname="pdf_reader_chinese",
+            fontname="fixedpdf_chinese",
             fontfile=str(CHINESE_FONT),
             fontsize=size,
             lineheight=1.05,
@@ -74,7 +74,7 @@ def insert_vertical(page: pymupdf.Page, rect: pymupdf.Rect, text: str) -> None:
     page.insert_text(
         (rect.x0 + 1, rect.y1 - 1),
         text,
-        fontname="pdf_reader_chinese",
+        fontname="fixedpdf_chinese",
         fontfile=str(CHINESE_FONT),
         fontsize=min(9, max(5, rect.width * 0.7)),
         color=(0, 0, 0),

@@ -1,5 +1,5 @@
 [project]
-name = "reader3"
+name = "fixedpdf"
 version = "0.1.0"
 description = "Simple EPUB reader web app"
 readme = "README.md"

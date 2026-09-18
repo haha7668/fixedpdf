@@ -1,4 +1,4 @@
-# Project Intelligence: Reader3
+# Project Intelligence: FixedPDF
 
 一个现代化的、支持 AI 交互的 EPUB / PDF 双语阅读器。
 

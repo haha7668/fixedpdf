@@ -6,7 +6,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 
 uv sync --dev
 uv run pyinstaller --noconfirm --clean --onedir --windowed `
-    --name pdf_reader `
+    --name fixedpdf `
     --add-data "templates;templates" `
     --add-data "assets;assets" `
     --collect-all edge_tts `
@@ -15,4 +15,4 @@ uv run pyinstaller --noconfirm --clean --onedir --windowed `
     --collect-all pymupdf `
     launcher.py
 
-Write-Host "Built: dist\pdf_reader\pdf_reader.exe"
+Write-Host "Built: dist\fixedpdf\fixedpdf.exe"

@@ -5,7 +5,7 @@
 
 ---
 
-# Reader3 — AI 智能电子书阅读器
+# FixedPDF — AI 智能电子书阅读器
 
 ## 项目简介
 
@@ -43,7 +43,7 @@ python tools/_md2pdf.py
 ## 目录说明
 
 ```
-reader3/
+fixedpdf/
 ├── server.py / reader3.py    # 后端
 ├── templates/                 # 前端页面
 ├── docs/                      # 源文档 (md)

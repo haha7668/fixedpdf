@@ -1,10 +1,10 @@
 English | [简体中文](README.md)
 
-# 🧊 Smoothie Reader (Reader3)
+# 🧊 FixedPDF
 
 > "When technology is democratized by AI, aesthetics and human-centric design become the ultimate differentiators."
 
-Inspired by Andrej Karpathy's [minimalist reader prototype](https://x.com/karpathy/status/1990577951671509438), Smoothie Reader is a locally deployed AI-powered e-book reader with built-in word lookup, AI translation & chat, TTS reading, and highlight notes — designed for deep reading.
+Inspired by Andrej Karpathy's [minimalist reader prototype](https://x.com/karpathy/status/1990577951671509438), FixedPDF is a locally deployed AI-powered e-book reader with built-in word lookup, AI translation & chat, TTS reading, and highlight notes — designed for deep reading.
 
 📖 **Built-in sample book**: The repository includes "Meditations" by Marcus Aurelius (via Project Gutenberg), ready to explore after cloning.
 

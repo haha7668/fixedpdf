@@ -1,6 +1,6 @@
-# Reader3 进阶配置指南
+# FixedPDF 进阶配置指南
 
-本指南涵盖了 Reader3 的高级功能配置。如果你还没有安装 Reader3，请先查看项目主页的 [快速开始](../README.md)。
+本指南涵盖了 FixedPDF 的高级功能配置。如果你还没有安装 FixedPDF，请先查看项目主页的 [快速开始](../README.md)。
 
 ## 1. 安装离线词典
 
@@ -17,7 +17,7 @@
 
 ## 2. 高级 AI 提供商路由 (AI Routing)
 
-除了在普通的「设置」面板中添加一个主 API Key，Reader3 还支持极其强大的多提供商路由功能。
+除了在普通的「设置」面板中添加一个主 API Key，FixedPDF 还支持极其强大的多提供商路由功能。
 
 ### 🚀 解锁隐藏面板 (游戏秘籍)
 > [!IMPORTANT]
@@ -30,7 +30,7 @@
 
 ## 3. 局域网内多设备访问
 
-Reader3 默认监听 `0.0.0.0` 接口。如果你想在同一 Wi-Fi 网络下的平板或手机上阅读：
+FixedPDF 默认监听 `0.0.0.0` 接口。如果你想在同一 Wi-Fi 网络下的平板或手机上阅读：
 
 1. 确保电脑上的 `uv run server.py` 正在运行。
 2. 在电脑终端输入 `ifconfig | grep "inet "` (macOS/Linux) 或 `ipconfig` (Windows) 查找本机 IP 地址（例如 `192.168.1.100`）。

@@ -19,7 +19,7 @@ async def main():
     parser.add_argument('--reuse', action='store_true', help='Reuse checked translations with identical source text')
     parser.add_argument('--trace', action='store_true', help='Save local response diagnostics (contains document text)')
     args = parser.parse_args()
-    runtime = Path(os.environ['LOCALAPPDATA']) / 'pdf_reader'
+    runtime = Path(os.environ['LOCALAPPDATA']) / 'fixedpdf'
     server.AI_CONFIG_PATH = str(runtime / 'ai_config.json')
     server._load_ai_config()
     source = runtime / 'books' / args.book / 'book.pdf'

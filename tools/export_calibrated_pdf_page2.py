@@ -9,7 +9,7 @@ import pymupdf
 
 
 FONT_FILE = Path(r"C:\Windows\Fonts\simhei.ttf")
-SOURCE_PDF = Path(os.environ["LOCALAPPDATA"]) / "pdf_reader" / "books" / "MM54HC34MM74HC34 Non-Inverter_data" / "book.pdf"
+SOURCE_PDF = Path(os.environ["LOCALAPPDATA"]) / "fixedpdf" / "books" / "MM54HC34MM74HC34 Non-Inverter_data" / "book.pdf"
 OUTPUT_PDF = Path("output/pdf/MM54HC34MM74HC34_中文第2页_保留版式.pdf")
 OUTPUT_PREVIEW = Path("output/pdf/MM54HC34MM74HC34_中文第2页_保留版式.png")
 
@@ -62,7 +62,7 @@ def draw_replacement(page: pymupdf.Page, rect: pymupdf.Rect, text: str, *, minim
         remainder = page.insert_textbox(
             inner,
             text,
-            fontname="pdf_reader_chinese",
+            fontname="fixedpdf_chinese",
             fontfile=str(FONT_FILE),
             fontsize=size,
             lineheight=1.0,
