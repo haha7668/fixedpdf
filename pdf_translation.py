@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-ENGINE_VERSION = "structured-21"
+ENGINE_VERSION = "structured-22"
 PDF_LOCK = threading.RLock()  # Serialize operations in this pipeline.
 SIGNALS = re.compile(r"\b(?:VCC|VDD|VSS|GND|VIN|VOUT|IOUT|ICC|CLK|SPI|CMOS|TTL)\b|"
                      r"/?[A-Za-z][A-Za-z0-9_]*\d[A-Za-z0-9_]*|/[A-Z]+\b")
@@ -278,10 +278,15 @@ def _left_shift(source: str, target: str, size: float) -> float:
 
 
 def _translation_markup(target: str) -> str:
-    """把译文转成 HTML：角标标记与商标符号都写成 <sup>。
+    """把译文转成 HTML：角标标记与商标符号都写成 <sup>，换行写成 <br>。
 
     HTML 转义后再还原角标标记，最后把标记之间的内容整体包进 <sup>，因此角标
     在成稿里仍是角标，不会被降级成正文。
+
+    换行必须显式转成 ``<br>``。``insert_htmlbox`` 把 HTML 当连续文本流排版，
+    源码里的 ``\\n`` 只相当于一个空格：原文逐项排列的清单（``0: …``、``1: …``）
+    渲染出来就挤成一团，编号之间的分界完全消失。角标标记内部的换行除外，它
+    属于标记语法，不能打断。
     """
     escaped = html.escape(target)
     escaped = escaped.replace(html.escape(SCRIPT_OPEN), SCRIPT_OPEN)
@@ -290,7 +295,7 @@ def _translation_markup(target: str) -> str:
                      r'<sup>\g<1></sup>', escaped, flags=re.S)
     # 未配对的标记不应留在页面上。
     escaped = escaped.replace(SCRIPT_OPEN, '').replace(SCRIPT_CLOSE, '')
-    return re.sub(f'[{INLINE_MARKS}]', r'<sup>\g<0></sup>', escaped)
+    return re.sub(f'[{INLINE_MARKS}]', r'<sup>\g<0></sup>', escaped).replace('\n', '<br>')
 
 
 def _line_boxes(region: dict, left: float, right: float, bottom: float,
@@ -441,10 +446,13 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
                     text = data[ri][ci] or ''
                     # extract() 会把 HDL 参数名里的下划线换成空格
                     # （C_NO_OF_LANES 变成 "C NO OF LANES"），交给模型就会被当
-                    # 英文词组翻译。原生字符里下划线仍在，优先采用。
-                    native = _cell_text(page, box)
-                    if native:
-                        text = native
+                    # 英文词组翻译；它还会把行内的下划线拆成单独一行，译文里跟着
+                    # 冒出一串孤立的 ``_``。原生字符里下划线、词间空格都在，可提
+                    # 到原生行时一律以它为准。
+                    cell_rows = _cell_lines(lines, box)
+                    cell_texts, cell_paragraphs = _cell_paragraphs(cell_rows, box)
+                    if cell_texts:
+                        text = '\n'.join(cell_texts)
                     if ci in symbol_columns and ri > first_row:
                         continue
                     if cell_spans and nested:
@@ -455,6 +463,9 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
                         if len(kept) != len(cell_spans):
                             cell_spans = kept
                             text = ' '.join(s['text'].strip() for s in kept)
+                            # 重建后的文字来自 span 拼接，已无段落行距可循，
+                            # 段落几何随之作废，交给流式排版。
+                            cell_paragraphs = []
                     if not cell_spans or not needs_translation(text):
                         continue
                     sizes = [s['size'] for s in cell_spans]
@@ -470,10 +481,16 @@ def analyze_page(pdf_path: str, page_number: int) -> dict:
                         continue
                     padded = fitz.Rect(box.x0 + 2, box.y0 + 1, box.x1 - 2, box.y1 - 1)
                     region = _region(f'{grid["id"]}r{ri}c{ci}', cell_spans, padded, 'cell', text)
-                    ink = _union(cell_spans)
-                    if abs((ink.x0 + ink.x1) / 2 - (box.x0 + box.x1) / 2) < 3:
+                    # 对齐判定要看真实的格边界：padded 已向内收缩，用它当参照会把
+                    # 贴着格左边界排版的行误算成缩进。
+                    if _cell_is_centered(cell_spans, box):
                         region['align'] = 1
                     region['table'] = grid['id']
+                    if len(cell_paragraphs) > 1:
+                        # 单元格原文本身分段（逐项清单、多段说明），把逐段几何带上，
+                        # 按段排版才能恢复「一段一段」的结构；否则整段流式排版，HTML
+                        # 把换行折成空格，各段挤作一团。
+                        region['lines'] = cell_paragraphs
                     regions.append(region)
         # Outside ruled tables, use the native lines, not a block that can
         # span independent columns. Merge only aligned consecutive prose.
@@ -650,27 +667,105 @@ def _skip_marker(target: str) -> bool:
     return target.strip().upper() == SKIP_TOKEN
 
 
-def _cell_text(page, box: fitz.Rect) -> str | None:
-    """按原生字符拼出单元格文本，保住 ``extract()`` 会破坏的标识符。
+def _cell_lines(lines: list[dict], box: fitz.Rect) -> list[tuple[str, dict]]:
+    """取回单元格内每一原生行的文本与几何。
 
     表格提取把参数名 ``C_NO_OF_LANES`` 的下划线换成了空格，模型因此把它当作
-    英文词组翻译；同一份文字用 span 级字符取回时下划线还在。原生文本含有
-    下划线时以它为准，否则仍用 ``extract()`` 的结果（它能合并跨行文字）。
+    英文词组翻译；同一份文字按原生字符取回时下划线还在，所以拿到原生文本后
+    优先采用。
+
+    词间空格必须原样保留。早前这里把空白字符全部剔除，``0: Generates three
+    32-bit`` 变成 ``0:Generatesthree32-bit``，模型读不出词界，译文里就留下
+    ``Generatesthree32位`` 这样的回声。
     """
-    parts = []
-    for block in page.get_text('rawdict')['blocks']:
-        for line in block.get('lines', []):
-            chars = [c for c in (c for span in line['spans'] for c in span['chars'])
-                     if not c['c'].isspace()]
-            if not chars:
-                continue
-            centre = fitz.Point((chars[0]['bbox'][0] + chars[-1]['bbox'][2]) / 2,
-                                (chars[0]['bbox'][1] + chars[-1]['bbox'][3]) / 2)
-            if box.contains(centre):
-                parts.append((line['bbox'][1], ''.join(c['c'] for c in chars)))
-    if not any('_' in text for _, text in parts):
-        return None
-    return '\n'.join(text for _, text in sorted(parts))
+    rows = []
+    for line in lines:
+        spans = [span for span in line['spans'] if span['text'].strip()]
+        if not spans:
+            continue
+        union = _union(spans)
+        if not box.contains(fitz.Point((union.x0 + union.x1) / 2, (union.y0 + union.y1) / 2)):
+            continue
+        body = max(spans, key=lambda s: len(s['text']))
+        rows.append((' '.join(span['text'].strip() for span in spans), {
+            'bbox': _rect(union),
+            'baseline': body['origin'][1],
+            'font': body['font'],
+            'font_size': body['size'],
+        }))
+    rows.sort(key=lambda row: row[1]['baseline'])
+    return rows
+
+
+def _cell_paragraphs(rows: list[tuple[str, dict]], box: fitz.Rect) -> tuple[list[str], list[dict]]:
+    """按行距把单元格的原生行归并成段落，恢复「一段一段」的结构。
+
+    单元格里的换行有两种含义：段内折行与段落分隔。在纯文本里都写作 ``\\n``，
+    只能靠行距分辨——段内行距就是这个单元格的常规行距，段落之间明显更大。
+    不加区分就整段流式排版时，HTML 把 ``\\n`` 折成空格，原文逐项排列的清单
+    （``0: …``、``1: …``、``PCIEBAR_0 is 32 bits``）会挤成一团，编号之间的
+    分界完全消失，读者再也看不出这是几项。
+
+    判据取「字号中位数 1.35 倍」与「最小基线间距 1.15 倍」中较大者：前者贴合
+    本类手册 9.5–10 pt 字号、11.5 pt 行距的排版，后者防止行距本就宽松的单元格
+    被逐行切开。返回段落文本与逐段几何，几何的左右边界用单元格的边界，中文
+    比英文紧凑，段内要留出自由折行的宽度。
+    """
+    if not rows:
+        return [], []
+    baselines = [structure['baseline'] for _, structure in rows]
+    pitches = [later - earlier for earlier, later in zip(baselines, baselines[1:], strict=False)]
+    sizes = sorted(structure['font_size'] for _, structure in rows)
+    threshold = max(sizes[len(sizes) // 2] * 1.35, (min(pitches) if pitches else 0) * 1.15)
+    groups: list[list[tuple[str, dict]]] = [[rows[0]]]
+    for index, row in enumerate(rows[1:], 1):
+        if baselines[index] - baselines[index - 1] > threshold:
+            groups.append([])
+        groups[-1].append(row)
+    texts, structures = [], []
+    for group in groups:
+        first, last = group[0][1], group[-1][1]
+        texts.append(' '.join(text for text, _ in group))
+        structures.append({'bbox': [box.x0, first['bbox'][1], box.x1, last['bbox'][3]],
+                           'baseline': first['baseline'],
+                           'font': first['font'], 'font_size': first['font_size']})
+    return texts, structures
+
+
+def _cell_is_centered(spans: list[dict], box: fitz.Rect) -> bool:
+    """判断单元格是否居中排版。
+
+    早前用「整格墨迹的中心是否贴近格中心」判断，长文本的墨迹本就几乎填满整格，
+    中心自然接近格中心，于是一整列左对齐的清单被误判成居中；渲染出来每一行都
+    被推到格子中间，右侧长短不齐，比原文更显拥挤。
+
+    多行时改看**行左边缘彼此是否齐平**：左对齐的每一行都从同一个位置起排，左
+    边缘的极差接近零，而右边缘参差不齐；居中排版则左右两侧都参差。分组必须按
+    基线聚类：同一行里的多个 span 字号不同（``NUM READ`` 与 ``OUTSTANDING``），
+    包围盒上边缘能差近 2 pt，按 y0 取整会被拆成两行，左对齐就误算成居中。这个
+    信号与单元格内边距无关，比拿行边缘去比格边界稳健。单行时才退回中心距的
+    粗略判据。
+    """
+    boxes = [fitz.Rect(span['bbox']) for span in spans if span['text'].strip()]
+    if not boxes:
+        return False
+    ordered = sorted(zip(boxes, spans, strict=True), key=lambda pair: pair[1]['origin'][1])
+    size = min(span['size'] for span in spans)
+    rows: list[fitz.Rect] = []
+    baseline = None
+    for rect, span in ordered:
+        if baseline is None or span['origin'][1] - baseline > size * .6:
+            rows.append(rect)
+            baseline = span['origin'][1]
+        else:
+            rows[-1] |= rect
+    if len(rows) > 1:
+        lefts = [rect.x0 for rect in rows]
+        rights = [rect.x1 for rect in rows]
+        # 左边缘齐平（极差不到半个字宽）即为左对齐。
+        return max(lefts) - min(lefts) > size * .5 and max(rights) - min(rights) > size * .5
+    ink = _union(spans)
+    return abs((ink.x0 + ink.x1) / 2 - (box.x0 + box.x1) / 2) < 3
 
 
 def _digits_preserved(source: str, translated: str) -> bool:
@@ -961,7 +1056,8 @@ def render_page(pdf_path: str, plan: dict, targets: dict, destination: str) -> d
 
             options = None
             # 显式换行与原文行数一致时（目录、注解等），逐行盒保住「一行一项」
-            # 的行结构，不让上下两条挤进同一行。
+            # 的行结构，不让上下两条挤进同一行。行数对不上时交给下面的流式排版：
+            # 换行已转成 <br>，各段仍会各自起行，只是段内自由折行。
             if source_count > 1 and len(target_lines) == source_count:
                 boxes = _line_boxes(region, region['bbox'][0], region['bbox'][2], region['bbox'][3])
                 if boxes and attempt(css, boxes, target_lines):

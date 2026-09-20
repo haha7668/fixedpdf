@@ -1337,3 +1337,105 @@ async def test_deepseek_translation_disables_thinking_only_for_translation(monke
     await server._ai_complete('chat')
     assert call.call_args.kwargs['extra_body'] is None
     assert call.call_args.kwargs['final_only'] is False
+
+def _list_cell_pdf(path: Path, lines: list[tuple[float, str]]) -> None:
+    """造一个带表头的两列表格，清单文字放进右列的大单元格。
+
+    横线要够三条：只有两条时表格识别会把行数算成 1，``col_count`` 或
+    ``row_count`` 不足 2 的网格会被直接丢弃，文字就落到正文路径上，测不到
+    单元格。表头一格留空即可，足以让识别器认出规则网格。
+    """
+    with fitz.open() as doc:
+        page = doc.new_page(width=400, height=400)
+        for y in (50, 70, 320):
+            page.draw_line((40, y), (380, y))
+        for x in (40, 120, 380):
+            page.draw_line((x, 50), (x, 320))
+        for baseline, text in lines:
+            page.insert_text((130, baseline), text, fontsize=10)
+        doc.save(path)
+
+
+def test_multiline_cell_keeps_spaces_and_underscores(tmp_path):
+    """单元格原文必须保住词间空格与参数名里的下划线。
+
+    早前这里把空白字符全部剔除又拼在一起，``0: Generates three 32-bit``
+    变成 ``0:Generatesthree32-bit``，模型读不出词界，译文里就留下
+    ``Generatesthree32位`` 这种半英半中的回声；行内的下划线还会被拆成单独的
+    一行，译文里跟着冒出一串孤立的 ``_``。
+    """
+    path = tmp_path / 'cell.pdf'
+    _list_cell_pdf(path, [(80, '0: Generates three 32-bit'),
+                          (95, 'PCIEBAR_0 is 32 bits'),
+                          (110, 'PCIEBAR_1 is 32 bits')])
+    plan = translation.analyze_page(str(path), 1)
+    source = plan['regions'][0]['source']
+    assert plan['regions'][0]['kind'] == 'cell', '待测文字必须落在表格单元格里'
+    assert 'Generates three 32-bit' in source, source
+    assert 'PCIEBAR_0 is 32 bits' in source, source
+    assert 'Generatesthree' not in source
+    assert not any(line.strip() == '_' for line in source.split('\n')), source
+
+
+def test_multiline_cell_keeps_paragraph_breaks(tmp_path):
+    """单元格里的段落分隔要按行距认出，渲染时不能再挤成一团。
+
+    段内折行与段落分隔在纯文本里都是换行，只能靠行距分辨。整段流式排版时
+    HTML 把换行折成空格，``0: …``、``1: …`` 之间再无分界。这里用同一单元格
+    造两段（段内行距 10 pt、段间 30 pt），要求识别成两段并在成稿里各自起行。
+    """
+    path, output = tmp_path / 'paragraphs.pdf', tmp_path / 'paragraphs-zh.pdf'
+    _list_cell_pdf(path, [(80, '0: Generates three 32-bit apertures'),
+                          (90, 'for the default configuration'),
+                          (120, '1: Generates three 64 bit apertures'),
+                          (130, 'for the alternate configuration')])
+    plan = translation.analyze_page(str(path), 1)
+    region = plan['regions'][0]
+    assert region['kind'] == 'cell', '待测文字必须落在表格单元格里'
+    assert len(region['source'].split('\n')) == 2, region['source']
+    assert len(region['lines']) == 2, '段落分隔应被识别成两段'
+    # 第一段占两行，其几何要覆盖到段内两行的高度。
+    first = fitz.Rect(region['lines'][0]['bbox'])
+    assert first.height > 15, first
+    report = translation.render_page(str(path), plan, {
+        region['id']: '0：生成三个 32 位孔径\n1：生成三个 64 位孔径'}, str(output))
+    assert report['translated'] == 1 and not report['warnings']
+    with fitz.open(output) as doc:
+        baselines = sorted(line['spans'][0]['origin'][1]
+                           for block in doc[0].get_text('dict')['blocks']
+                           for line in block.get('lines', []) if line['bbox'][1] < 300)
+    assert len(baselines) >= 2, baselines
+    assert baselines[1] - baselines[0] > 10, '两段应各自起行，不能挤成一行'
+
+
+def test_multiline_left_aligned_cell_is_not_centered(tmp_path):
+    """多行左对齐的单元格不能被当成居中排版。
+
+    早前用「墨迹中心是否贴近格中心」判断，长文本的墨迹本就几乎填满整格，中心
+    自然接近格中心，于是整列左对齐的清单被判成居中；渲染时每一行都被推到格子
+    中间，右侧长短不齐，比原文更显拥挤。判据改为看各行左边缘是否齐平。
+    """
+    path = tmp_path / 'aligned.pdf'
+    _list_cell_pdf(path, [(100, 'Configures PCIEBAR'), (112, 'aperture width to be'),
+                          (124, '32 bits wide or 64'), (136, 'bits wide')])
+    plan = translation.analyze_page(str(path), 1)
+    region = next(r for r in plan['regions'] if r['kind'] == 'cell' and 'Configures' in r['source'])
+    assert region['align'] == 0, '左对齐的多行单元格被误判成居中'
+
+
+def test_centered_single_line_cell_stays_centered(tmp_path):
+    """单行居中的格（表头、短值）仍要居中，判据改动不能把这类一起改掉。"""
+    path = tmp_path / 'centered.pdf'
+    with fitz.open() as doc:
+        page = doc.new_page(width=400, height=400)
+        for y in (50, 70, 320):
+            page.draw_line((40, y), (380, y))
+        for x in (40, 120, 380):
+            page.draw_line((x, 50), (x, 320))
+        # 文字必须落在格子的水平正中，才是真正居中的单元格。
+        width = fitz.get_text_length('Header', fontsize=10)
+        page.insert_text((250 - width / 2, 64), 'Header', fontsize=10)
+        doc.save(path)
+    plan = translation.analyze_page(str(path), 1)
+    region = next(r for r in plan['regions'] if 'Header' in r['source'])
+    assert region['align'] == 1, '居中的单行格被改判成左对齐'
