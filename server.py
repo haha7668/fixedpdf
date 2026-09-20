@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import pickle
 import re
@@ -26,8 +27,8 @@ from fastapi.templating import Jinja2Templates
 from google import genai as google_genai
 from pydantic import BaseModel
 
-from reader3 import Book, process_epub, save_to_pickle
 import pdf_translation
+from reader3 import Book, process_epub, save_to_pickle
 
 # Keep bundled resources separate from writable user data in frozen builds.
 # `dist/` is replaced on every PyInstaller build, so it must never hold books,
@@ -46,7 +47,6 @@ if getattr(sys, "frozen", False):
 load_dotenv(os.path.join(APP_DIR, ".env"))
 
 # --- AI 链路日志：记录每次 AI 请求/流式原始数据/清理后数据，用于排查 ---
-import logging
 _ai_logger = logging.getLogger('smoothie_ai')
 _ai_logger.setLevel(logging.INFO)
 if not _ai_logger.handlers:
@@ -329,7 +329,6 @@ async def _call_cli(cli_command: str, prompt: str, timeout: int = 600) -> str:
     if not cli_command:
         raise Exception("未配置 CLI 命令模板")
     # 用 shell 执行（Windows 用 cmd，POSIX 用 sh）
-    import sys
     cmd = cli_command.replace('{prompt}', prompt)
     proc = await asyncio.create_subprocess_shell(
         cmd,
@@ -338,7 +337,7 @@ async def _call_cli(cli_command: str, prompt: str, timeout: int = 600) -> str:
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             proc.kill()
         except Exception:
@@ -1477,7 +1476,6 @@ async def chat_with_context(req: dict):
     title = (req.get("title") or "").strip()
     history = req.get("history") or []
     images = req.get("images") or []
-    provider_id = (req.get("provider_id") or "").strip() or None
     if not question and not images:
         raise HTTPException(status_code=400, detail="No question provided")
     if not question:
@@ -2510,7 +2508,6 @@ _TABLE_CELL_GLOSSARY = {
     "Maximum Output Rise": "最大输出上升",
     "Maximum Output Rise and Fall Time": "最大输出上升和下降时间",
     "and Fall Time": "和下降时间",
-    "Power Dissipation": "功耗",
     "Capacitance": "电容",
 }
 
@@ -2818,7 +2815,6 @@ async def translate_pdf_page(book_id: str, req: dict):
 @app.post("/api/pdf-segments/{book_id}")
 async def translate_pdf_segments(book_id: str, req: dict):
     """逐段提取某页文本并翻译，返回段落级数据（含位置坐标），支持块级缓存。"""
-    import fitz
     safe_id = os.path.basename(book_id)
     book_dir = os.path.join(BOOKS_DIR, safe_id)
     pdf_path = os.path.join(book_dir, "book.pdf")
@@ -2839,7 +2835,7 @@ async def translate_pdf_segments(book_id: str, req: dict):
     cache = _load_segment_cache(book_dir)
     segments = []
     pending = []  # (index, block)
-    for i, b in enumerate(blocks):
+    for b in blocks:
         key = b['cache_key']
         cached = cache.get(key)
         if cached:
