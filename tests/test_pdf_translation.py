@@ -880,6 +880,15 @@ def test_translation_waits_for_scroll_stop_not_passthrough():
     settled = re.search(r'_settled\(\) \{(.*?)\n        \},', html, re.S).group(1)
     assert '_request(currentPage, false, true)' in settled, '停留页未按最高优先级请求'
     assert '_prefetchAround(currentPage)' in settled, '停留页未触发预取'
+    assert '_trimQueueTo(currentPage)' in settled, '停留页未清理过期排队页'
+
+    # 队列始终围绕当前停留页：窗口外（停留页 ± N）的排队页被清理。
+    trim = re.search(r'_trimQueueTo\(page\) \{(.*?)\n        \},', html, re.S).group(1)
+    assert 'page - this._range' in trim and 'page + this._range' in trim, '未按停留页窗口裁剪'
+    assert "status === 'queued'" in trim, '未清理被移除页的排队状态'
+
+    # 并发降为 1：停留页切换后最多等一个在译页，不与其他页争抢槽位。
+    assert re.search(r'MAX_CONCURRENT:\s*1\b', html), '并发未降为 1，停留页会被并行的预取页抢占'
 
     # 翻页只刷新状态，不再逐页预取。
     on_page = re.search(r'_onPageChange\(page\) \{(.*?)\n        \},', html, re.S).group(1)

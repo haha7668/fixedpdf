@@ -2861,7 +2861,7 @@
     /* ========== Structured Chinese PDF: preview equals export ========== */
     const Bilingual = {
         _on: false, _cache: new Map(), _queue: [], _active: 0, _blockedReason: '',
-        _pending: new Set(), MAX_CONCURRENT: 2,
+        _pending: new Set(), MAX_CONCURRENT: 1,
         _range: 0, _outlineStatus: '',
         init() {
             try { this._on = localStorage.getItem('pdf_bilingual') === '1'; } catch {}
@@ -2877,6 +2877,8 @@
                 rangeSelect.addEventListener('change', e => {
                     this._range = Math.max(0, Number(e.target.value) || 0);
                     try { localStorage.setItem('pdf_bilingual_range', String(this._range)); } catch {}
+                    this._trimQueueTo(currentPage);
+                    this._request(currentPage, false, true);
                     this._prefetchAround(currentPage);
                     this._status();
                 });
@@ -2896,11 +2898,28 @@
         _onPageChange(page) {
             this._status();
         },
-        /// 滚动停止后调用：对当前停留页优先翻译，并以其为中心预取前后 N 页。
+        /// 滚动停止后调用：先清理过期排队页，再对当前停留页最高优先级翻译，
+        /// 最后以停留页为中心预取前后 N 页。
         _settled() {
             if (!this._on) return;
+            this._trimQueueTo(currentPage);
             this._request(currentPage, false, true);
             this._prefetchAround(currentPage);
+        },
+        /// 队列始终围绕当前停留页：清掉窗口（停留页 ± N 页）之外的排队页。
+        /// 滚到新位置后，旧位置的预取页不再需要，留着只会抢占翻译资源并让
+        /// 状态栏的队列数虚高。
+        _trimQueueTo(page) {
+            const first = this._range > 0 ? Math.max(1, page - this._range) : page;
+            const last = this._range > 0 ? Math.min(pageContainers.length, page + this._range) : page;
+            const kept = this._queue.filter(item =>
+                item.pageNum === page || (item.pageNum >= first && item.pageNum <= last));
+            if (kept.length === this._queue.length) return;
+            this._queue = kept;
+            const keepSet = new Set(kept.map(item => item.pageNum));
+            for (const [p, entry] of this._cache) {
+                if (entry.status === 'queued' && !keepSet.has(p)) this._cache.delete(p);
+            }
         },
         _prefetchAround(page) {
             if (!this._on || this._range <= 0) return;
@@ -3110,7 +3129,7 @@
             }
             dialog.showModal();
         },
-        retry() { this._blockedReason = ''; this._request(currentPage, true); },
+        retry() { this._blockedReason = ''; this._request(currentPage, true, true); },
         downloadPage() {
             const report = this._cache.get(currentPage)?.report;
             if (!report) { alert('请先开启翻译并等待当前页完成。'); return; }
