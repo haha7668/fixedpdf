@@ -7,7 +7,6 @@ import pickle
 import re
 import shutil
 import sqlite3
-import sys
 import tempfile
 import threading
 import zlib
@@ -30,20 +29,11 @@ from pydantic import BaseModel
 import pdf_translation
 from reader3 import Book, process_epub, save_to_pickle
 
-# Keep bundled resources separate from writable user data in frozen builds.
-# `dist/` is replaced on every PyInstaller build, so it must never hold books,
-# caches, or API configuration.
-RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-EXE_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else RESOURCE_DIR
-if getattr(sys, "frozen", False):
-    APP_DIR = os.path.join(os.getenv("LOCALAPPDATA") or EXE_DIR, "fixedpdf")
-    os.makedirs(APP_DIR, exist_ok=True)
-else:
-    APP_DIR = RESOURCE_DIR
+# 资源目录（templates/assets）与可写用户数据（书籍、缓存、配置）都位于项目目录。
+RESOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_DIR = RESOURCE_DIR
 
 # Load .env file automatically
-if getattr(sys, "frozen", False):
-    load_dotenv(os.path.join(EXE_DIR, ".env"))
 load_dotenv(os.path.join(APP_DIR, ".env"))
 
 # --- AI 链路日志：记录每次 AI 请求/流式原始数据/清理后数据，用于排查 ---

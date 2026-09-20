@@ -8,7 +8,6 @@
 |------|--------|--------|------|
 | PyMuPDF / MuPDF | GNU AGPL-3.0 或 Artifex 商业许可 | Artifex Software, Inc. | PDF 解析、文本/段落/坐标提取、排字 |
 | edge-tts | LGPL-3.0（`src/edge_tts/srt_composer.py` 为 MIT） | rany2 及贡献者 | 文本朗读（TTS） |
-| PyInstaller | GPL-2.0-or-later WITH Bootloader-exception | PyInstaller Development Team | 打包工具（Bootloader 例外允许打包闭源应用） |
 
 ## 宽松许可证依赖
 
@@ -52,7 +51,6 @@
 
 - GNU Affero General Public License v3.0：<https://www.gnu.org/licenses/agpl-3.0.txt>
 - GNU Lesser General Public License v3.0：<https://www.gnu.org/licenses/lgpl-3.0.txt>
-- GNU General Public License v2.0（含 Bootloader-exception）：<https://pyinstaller.org/en/stable/license.html>
 - MIT / Apache-2.0 / BSD-3-Clause / MIT-CMU：请参见各上游仓库的 `LICENSE` 文件。
 
 > 说明：`assets/` 下的预置电子书与 `books/`、`dict/*.db`、`.env`、`ai_config.json`、`server*.log` 等本地运行时产物不随源代码分发，且不应提交至仓库。
