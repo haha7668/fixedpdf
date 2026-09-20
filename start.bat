@@ -21,6 +21,7 @@ cd /d "%SCRIPT_DIR%"
 set "VENV_DIR=%SCRIPT_DIR%.venv"
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 set "REQUIREMENTS=%SCRIPT_DIR%requirements.txt"
+set "DEPS_HELPER=%SCRIPT_DIR%tools\check_deps.py"
 set "APP_URL=http://127.0.0.1:8123"
 set "PY_DOWNLOAD_URL=https://www.python.org/downloads/windows/"
 set "PY_MIN_MAJOR=3"
@@ -117,7 +118,7 @@ echo [3/4] 依赖组件
 
 call :check_deps
 if defined DEPS_MISSING (
-    echo       [缺失]!DEPS_MISSING!
+    echo       [缺失] !DEPS_MISSING!
     call :offer_install_deps
     if defined DEPS_MISSING (
         echo.
@@ -173,26 +174,18 @@ rem  子过程
 rem ============================================================================
 
 :check_deps
-rem 按 import 名逐个校验，比读 requirements.txt 更贴近真实可用性；
-rem 批处理不便遍历映射，平铺以便定位到具体缺失项。
+rem 依赖清单以 requirements.txt 为唯一来源：tools\check_deps.py 按发行包名逐个核对。
+rem 检查与安装共用同一份清单，避免检查说缺依赖、安装却补不上的死循环。
 set "DEPS_MISSING="
-call :dep fastapi       fastapi
-call :dep uvicorn       uvicorn
-call :dep pymupdf       pymupdf
-call :dep bs4           beautifulsoup4
-call :dep jinja2        jinja2
-call :dep edge_tts      edge-tts
-call :dep httpx         httpx
-call :dep dotenv        python-dotenv
-call :dep multipart     python-multipart
-call :dep PIL           pillow
-call :dep google.genai  google-genai
-call :dep dashscope     dashscope
-exit /b 0
-
-:dep
-"%VENV_PY%" -c "import %~1" >nul 2>&1
-if errorlevel 1 set "DEPS_MISSING=!DEPS_MISSING! %~2"
+if not exist "%DEPS_HELPER%" (
+    echo       [跳过] 未找到 tools\check_deps.py，无法核对依赖
+    exit /b 0
+)
+set "DEPS_PROBE=%TEMP%\fixedpdf_deps_%RANDOM%.txt"
+"%VENV_PY%" "%DEPS_HELPER%" "%REQUIREMENTS%" > "%DEPS_PROBE%" 2>nul
+rem 读前先清空：set /p 读空文件不会覆盖旧值。
+set /p DEPS_MISSING=<"%DEPS_PROBE%"
+del "%DEPS_PROBE%" >nul 2>&1
 exit /b 0
 
 :service_running

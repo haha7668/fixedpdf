@@ -31,6 +31,8 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.5.0",
     "mypy>=1.10.0",
+    # tests/test_packaging.py 用 tomllib 读 pyproject，Python 3.10 需要 tomli 兜底
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [tool.coverage.run]
