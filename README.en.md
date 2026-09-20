@@ -4,46 +4,23 @@ English | [简体中文](README.md)
 
 > "When technology is democratized by AI, aesthetics and human-centric design become the ultimate differentiators."
 
-Inspired by Andrej Karpathy's [minimalist reader prototype](https://x.com/karpathy/status/1990577951671509438), FixedPDF is a locally deployed AI-powered e-book reader with built-in word lookup, AI translation & chat, TTS reading, and highlight notes — designed for deep reading.
+A locally deployed AI bilingual reader built for **English technical manuals** — register maps, chip datasheets, IP product guides and academic papers. Deeply customized from [Smoothie Reader](https://github.com/Golden0Voyager/smoothie-reader), adding PDF reading, bilingual translation, multimodal image input and local model support.
 
-📖 **Built-in sample book**: The repository includes "Meditations" by Marcus Aurelius (via Project Gutenberg), ready to explore after cloning.
-
-<div align="center">
-  <img src="assets/library.jpg" width="800" alt="Library"><br>
-  <sub>Your personal library at a glance</sub>
-</div>
+---
 
 ## ✨ Key Features
 
-- 🔍 **Intuitive Discovery**: Highlight any text to reveal the action bar. Built-in support for **ECDICT** (English) and Chinese offline dictionaries.
-- 🤖 **AI-Powered Reading**:
-  - **Inline Translation**: High-quality, contextual translations elegantly embedded below the original text.
-  - **AI Companion**: A sidebar AI assistant supporting streaming dialogue and multi-turn memory for deep engagement.
-  - **Broad Compatibility**: Built-in support for OpenAI, Anthropic, Gemini, DeepSeek, Grok, Alibaba Cloud Bailian, Volcengine, Tencent Hunyuan, MiniMax, Moonshot, SiliconFlow, Cerebras, SambaNova, Groq, Mistral, DeepInfra, Together AI, OpenRouter, Zhipu AI, and ModelScope — 20 AI providers in total, plus custom OpenAI-compatible endpoints.
-
-<div align="center">
-  <img src="assets/reader_AItools.jpg" width="800" alt="AI Tools"><br>
-  <sub>Selection toolbar · Inline translation · AI companion sidebar</sub>
-</div>
-
-- 🔊 **TTS Reading**: Powered by Edge-TTS with multiple high-quality Chinese and English voices.
-- ✏️ **Highlights & Notes**: 5-color highlighting, inline annotations, and bookmarks — all stored in your browser's **localStorage**.
-
-<div align="center">
-  <img src="assets/reader_catelog.jpg" width="800" alt="Reading Layout"><br>
-  <sub>Three-column reading: TOC navigation · Immersive text · Multi-color highlights</sub>
-</div>
-
-- 🎨 **Minimalist Aesthetics**: 6 curated themes and a flexible 3-column layout (TOC / Content / AI), optimized for all devices.
-
-<div align="center">
-  <img src="assets/reader_setting.jpg" width="800" alt="Settings"><br>
-  <sub>Themes, typography, dictionaries, AI models — all in one panel</sub>
-</div>
+- **Layout-preserving PDF translation**: Detects real table cells; after translation, tables, formulas, pin diagrams and numbers stay aligned in place. Export the whole document as a Chinese PDF.
+- **20+ AI providers, ready to use**: Configure visually in the web UI, including Ollama and local CLIs — no code changes needed.
+- **Multimodal input + smart routing**: Paste or upload images; requests with images go to a vision model, text-only ones to your chosen text model.
+- **Word lookup · Bilingual comparison · TTS**: ECDICT offline dictionary, three comparison modes (overlay / paragraph / reflow), and Edge-TTS.
+- **Local-first, private by design**: Bring your own API key. No cloud dependency, your data stays on your machine.
 
 ## 📸 Demo
 
-> Using AMD's *AXI Memory Mapped to PCI Express* datasheet (PG055) as an example. The highlight: **table structure, signal names and numbers stay true to the original document**.
+> Using AMD's *AXI Memory Mapped to PCI Express* datasheet (PG055, November 24, 2023) as an example. The highlight: **table structure, signal names and numbers stay true to the original document**.
+>
+> Source: [AMD PG055](https://docs.amd.com/r/en-US/pg055-axi-bridge-pcie-gen2). Copyright AMD; used here for demonstration only.
 
 ### 1. Layout-Preserving Translation (IP Facts)
 

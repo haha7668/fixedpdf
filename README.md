@@ -18,7 +18,9 @@
 
 ## 📸 演示
 
-> 以 AMD《AXI Memory Mapped to PCI Express》数据手册（PG055）为例。核心亮点：**翻译后表格结构、信号名、数字与原文档保持一致**。
+> 以 AMD《AXI Memory Mapped to PCI Express》数据手册（PG055，November 24, 2023）为例。核心亮点：**翻译后表格结构、信号名、数字与原文档保持一致**。
+>
+> 手册来源：[AMD PG055](https://docs.amd.com/r/en-US/pg055-axi-bridge-pcie-gen2)，版权归 AMD 所有，此处仅作功能演示。
 
 ### 一、保留版式翻译（IP Facts 页）
 
