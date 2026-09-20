@@ -16,6 +16,40 @@
 
 ---
 
+## 📸 演示
+
+> 以 AMD《AXI Memory Mapped to PCI Express》数据手册（PG055）为例。核心亮点：**翻译后表格结构、信号名、数字与原文档保持一致**。
+
+### 一、保留版式翻译（IP Facts 页）
+
+左为原文，右为翻译结果。表格的单元格划分、行高、右栏内容位置均保持原位，`AMD Zynq™ 7000 SoC`、`AXI4`、`Vivado`、`54646` 等型号与编号原样保留，仅文字部分被翻译。
+
+| 原文 | 翻译后 |
+|------|--------|
+| ![原文：IP Facts](assets/demo-ip-facts-en.png) | ![译文：IP 信息](assets/demo-ip-facts-zh.png) |
+
+### 二、信号表翻译（Port Descriptions 页）
+
+信号表是技术手册里最容易翻译失败的部分——普通工具往往把信号名一起翻掉，或让列错位。这里 `refclk`、`axi_aresetn`、`s_axi_awlen[7:0]` 等信号名与位宽完全保留，只有 `I/O` 描述被翻译，表格线框与对齐不变。
+
+| 原文 | 翻译后 |
+|------|--------|
+| ![原文：Port Descriptions](assets/demo-port-desc-en.png) | ![译文：端口说明](assets/demo-port-desc-zh.png) |
+
+### 三、AI 划词解析（「查」）
+
+选中术语点「查」，AI 会解释「这是什么」——而不只是字面翻译。下图选中 `AXI Memory Mapped to PCI Express`，AI 给出了协议定位、工作原理与典型应用场景。
+
+![AI 划词解析](assets/demo-ai-explain.png)
+
+### 四、阅读器界面
+
+左侧目录导航、中间文档正文、右侧 AI 助手面板（含名称拆解、关键点解析等）。支持双语对照、划词查词、TTS 朗读与高亮笔记。
+
+![阅读器界面](assets/demo-reader-ui.png)
+
+---
+
 ## 🚀 快速开始
 
 ### 环境要求

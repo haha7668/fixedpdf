@@ -41,6 +41,38 @@ Inspired by Andrej Karpathy's [minimalist reader prototype](https://x.com/karpat
   <sub>Themes, typography, dictionaries, AI models — all in one panel</sub>
 </div>
 
+## 📸 Demo
+
+> Using AMD's *AXI Memory Mapped to PCI Express* datasheet (PG055) as an example. The highlight: **table structure, signal names and numbers stay true to the original document**.
+
+### 1. Layout-Preserving Translation (IP Facts)
+
+Original on the left, translation on the right. Cell boundaries, row heights and right-column alignment are all preserved. Identifiers such as `AMD Zynq™ 7000 SoC`, `AXI4`, `Vivado` and `54646` are kept verbatim — only prose is translated.
+
+| Original | Translated |
+|----------|------------|
+| ![Original: IP Facts](assets/demo-ip-facts-en.png) | ![Translated: IP Facts](assets/demo-ip-facts-zh.png) |
+
+### 2. Signal Table Translation (Port Descriptions)
+
+Signal tables are where generic translators usually fail — they translate the signal names themselves, or break the columns. Here `refclk`, `axi_aresetn`, `s_axi_awlen[7:0]` and their bit widths are preserved exactly; only the `I/O` descriptions are translated, with borders and alignment intact.
+
+| Original | Translated |
+|----------|------------|
+| ![Original: Port Descriptions](assets/demo-port-desc-en.png) | ![Translated: Port Descriptions](assets/demo-port-desc-zh.png) |
+
+### 3. AI Term Explanation ("Look Up")
+
+Select a term and hit **Look Up** — the AI explains *what it is*, not just a literal translation. Below, `AXI Memory Mapped to PCI Express` is broken down into its protocol role, working principle and typical use cases.
+
+![AI term explanation](assets/demo-ai-explain.png)
+
+### 4. Reader Interface
+
+TOC navigation on the left, document content in the middle, AI assistant panel on the right (with name breakdown, key-point analysis, and more). Supports bilingual comparison, word lookup, TTS and highlights.
+
+![Reader interface](assets/demo-reader-ui.png)
+
 ## 🚀 Quick Start
 
 This project uses [uv](https://docs.astral.sh/uv/) to manage the Python environment and dependencies.
