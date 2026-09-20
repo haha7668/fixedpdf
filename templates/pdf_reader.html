@@ -941,6 +941,14 @@
         return Math.min(window.innerWidth - 40, 900);
     }
 
+    // 目录标题来自 PDF 书签，属于不可信输入，插入 HTML 前必须转义。
+    function _escHtml(text) {
+        return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function _escAttr(text) {
+        return _escHtml(text).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     /* ========== TOC Module ========== */
     const TOC = {
         init() {
@@ -984,7 +992,7 @@
                 const chevron = `<span class="toc-toggle" onclick="event.stopPropagation();TOC.toggle(this)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>`;
                 html += `<div class="toc-group">`;
                 html += `<div class="toc-item${levelCls}" data-page="${node.page}" data-idx="${node.idx}" data-has-children="${hasChildren}" onclick="TOC.onItemClick(this, ${node.page})">`;
-                html += `<span class="toc-title">${node.title}</span>`;
+                html += `<span class="toc-title" data-title="${_escAttr(node.title)}">${_escHtml(node.title)}</span>`;
                 if (hasChildren) html += chevron;
                 html += `</div>`;
                 if (hasChildren) {
@@ -1019,6 +1027,25 @@
             if (container) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
             setTimeout(() => { TOC._userClick = false; }, 800);
         },
+        /// 把当前项滚进侧栏可视区，只动侧栏自己。
+        ///
+        /// 不用 ``scrollIntoView``：它会连带滚动**所有**可滚动祖先，一旦目录被
+        /// 包进新的滚动容器、或它成为 PDF 视图的后代，正文就会被一起带走。
+        /// 这里按侧栏自身的 scrollTop 精确计算，并留出上下边距，行为可预期。
+        _revealActive(activeEl) {
+            const sidebar = document.getElementById('sidebar');
+            if (!sidebar || sidebar.classList.contains('collapsed')) return;
+            const item = activeEl.getBoundingClientRect();
+            const box = sidebar.getBoundingClientRect();
+            const margin = 24;
+            if (item.top < box.top + margin) {
+                // 高于可视区顶：把它对齐到顶部附近
+                sidebar.scrollTop -= (box.top + margin) - item.top;
+            } else if (item.bottom > box.bottom - margin) {
+                // 低于可视区底：把它对齐到底部附近
+                sidebar.scrollTop += item.bottom - (box.bottom - margin);
+            }
+        },
         updateActive(page) {
             if (OUTLINE.length > 0) {
                 const items = document.querySelectorAll('.toc-item');
@@ -1037,7 +1064,7 @@
                         }
                         parent = parent.parentElement?.closest('.toc-children');
                     }
-                    if (!TOC._userClick) activeEl.scrollIntoView({ block: 'nearest' });
+                    if (!TOC._userClick) TOC._revealActive(activeEl);
                 }
             } else {
                 document.querySelectorAll('.toc-page-item').forEach(el => {
@@ -2832,7 +2859,7 @@
     const Bilingual = {
         _on: false, _cache: new Map(), _queue: [], _active: 0, _blockedReason: '',
         _pending: new Set(), _observer: null, MAX_CONCURRENT: 2,
-        _range: 0, _requestedRange: 0,
+        _range: 0, _requestedRange: 0, _outlineStatus: '',
         init() {
             try { this._on = localStorage.getItem('pdf_bilingual') === '1'; } catch {}
             const checkbox = document.getElementById('toggle-bilingual');
@@ -2856,7 +2883,11 @@
                     this._request(Number(entry.target.dataset.pageNum));
             }, { root: viewer, rootMargin: '800px 0px' });
             pageContainers.forEach(c => this._observer.observe(c));
-            if (this._on) { this._request(currentPage); this._prefetchAround(currentPage); }
+            if (this._on) {
+                this._request(currentPage);
+                this._prefetchAround(currentPage);
+                this._translateOutline();
+            }
             this._status();
         },
         /// 翻页时按范围预取。只在页号变化时触发，避免滚动过程中反复排队。
@@ -2880,16 +2911,68 @@
             if (!on) {
                 this._queue = [];
                 for (const [page, entry] of this._cache) if (entry.status === 'queued') this._cache.delete(page);
+                this._restoreOutline();
             }
             pageContainers.forEach((_, i) => {
                 if (pageRendered[i] || renderingPages.has(i + 1)) this._rerenderPage(i + 1);
             });
-            if (on) { this._request(currentPage); this._prefetchAround(currentPage); }
+            if (on) {
+                this._request(currentPage);
+                this._prefetchAround(currentPage);
+                this._translateOutline();
+            }
             this._status();
         },
         pageDocument(pageNum) {
             const cached = this._cache.get(pageNum);
             return this._on && cached?.status === 'done' ? cached.doc : null;
+        },
+        /// 开启翻译时把左侧目录也译成中文：只提交标题，由后端批量翻译并缓存。
+        async _translateOutline(force = false) {
+            const titles = [...document.querySelectorAll('#toc-content .toc-title')]
+                .map(el => el.dataset.title || '')
+                .filter(Boolean);
+            if (!titles.length) return;
+            this._outlineStatus = '正在翻译目录…';
+            this._status();
+            try {
+                const resp = await fetch('/api/pdf-outline-translate/' + encodeURIComponent(BOOK_ID), {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ titles, force })
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.detail || '目录翻译失败');
+                if (data.warning) {
+                    this._outlineStatus = data.warning;
+                } else {
+                    this._applyOutline(data.titles || {});
+                    this._outlineStatus = Object.keys(data.titles || {}).length
+                        ? '目录已中文化' : '';
+                }
+            } catch (e) {
+                this._outlineStatus = '目录翻译失败：' + e.message;
+            }
+            this._status();
+        },
+        /// 把译文写回目录项：保留原英文作为悬停提示，便于与文档对照。
+        _applyOutline(mapping) {
+            const items = document.querySelectorAll('#toc-content .toc-title');
+            let applied = 0;
+            for (const el of items) {
+                const original = el.dataset.title || '';
+                const translated = mapping[original];
+                if (!translated) continue;
+                el.textContent = translated;
+                el.title = original;
+                applied++;
+            }
+            return applied;
+        },
+        _restoreOutline() {
+            for (const el of document.querySelectorAll('#toc-content .toc-title')) {
+                if (el.dataset.title) { el.textContent = el.dataset.title; el.removeAttribute('title'); }
+            }
+            this._outlineStatus = '';
         },
         _request(pageNum, force = false) {
             if (!this._on || pageNum < 1 || pageNum > pageContainers.length) return;
@@ -2966,6 +3049,7 @@
                 const serviceFailure = r.warnings.find(w => w.code === 'provider_unavailable');
                 if (serviceFailure) node.textContent += '；' + serviceFailure.reason;
             } else node.textContent = cached?.status === 'error' ? '翻译失败：' + cached.message : '正在生成中文 PDF，暂显示原文…';
+            if (this._on && this._outlineStatus) node.textContent += '；' + this._outlineStatus;
             if (this._on && this._range > 0) {
                 const pendingPages = this._queue.length + this._active;
                 node.textContent += '；预翻译前后各 ' + this._range + ' 页' +

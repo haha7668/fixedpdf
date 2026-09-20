@@ -853,7 +853,7 @@ def test_prefetch_range_control_is_wired():
     for label, pattern in {
         '恢复已保存的范围': r"localStorage\.getItem\('pdf_bilingual_range'\)",
         '修改时持久化': r"localStorage\.setItem\('pdf_bilingual_range'",
-        '开启翻译时预取': r'this\._request\(currentPage\); this\._prefetchAround\(currentPage\)',
+        '开启翻译时预取': r'this\._request\(currentPage\);[\s\S]{0,200}?this\._prefetchAround\(currentPage\)',
         '翻页时触发预取': r'window\.Bilingual\?\._onPageChange\(currentPage\)',
         '按范围取前后页': r'Math\.max\(1, page - this\._range\)',
         '不越过末页': r'Math\.min\(pageContainers\.length, page \+ this\._range\)',
@@ -891,6 +891,93 @@ def test_lookup_popup_stays_closed_after_user_dismisses_it():
         assert 'const token = ++this._lookupToken;' in body, f'{fn} 未捕获令牌'
         assert 'if (token === this._lookupToken) this._showLookup();' in body, \
             f'{fn} 的异步返回未校验令牌'
+
+
+def test_outline_translation_is_wired_and_cached(source, monkeypatch):
+    """开启中文 PDF 时目录也应中文化：批量翻译、按书缓存、关闭后还原。"""
+    monkeypatch.setattr(server, 'BOOKS_DIR', str(source.parent.parent))
+    book_dir = source.parent
+
+    # 第一次：真实走翻译回调（此处用 monkeypatch 替掉模型调用）
+    translated_calls = []
+
+    async def fake_complete(prompt, **kwargs):
+        payload = json.loads(prompt.split('\n', 1)[1])
+        items = {item['id']: item['title'] for item in payload['items']}
+        translated_calls.append(list(items.values()))
+        return json.dumps({key: '中文' + title for key, title in items.items()}), 'mock'
+
+    monkeypatch.setattr(server, '_ai_complete', fake_complete)
+    with TestClient(server.app) as client:
+        titles = ['Table of Contents', 'IP Facts']
+        first = client.post('/api/pdf-outline-translate/sample', json={'titles': titles}).json()
+        assert first['translated'] == 2
+        assert first['titles'] == {'Table of Contents': '中文Table of Contents',
+                                   'IP Facts': '中文IP Facts'}
+        cache_file = book_dir / 'outline_zh.json'
+        assert cache_file.is_file(), '目录译文未落盘缓存'
+
+        # 第二次：应命中缓存，不再调用模型
+        calls_before = len(translated_calls)
+        second = client.post('/api/pdf-outline-translate/sample', json={'titles': titles}).json()
+        assert second['translated'] == 0, '重复请求不应再次翻译'
+        assert len(translated_calls) == calls_before
+        assert second['titles'] == first['titles']
+
+        # cache_only 对新标题应返回空且不调用模型
+        third = client.post('/api/pdf-outline-translate/sample',
+                            json={'titles': ['Brand New Title'], 'cache_only': True}).json()
+        assert third['titles'] == {} and third['translated'] == 0
+        assert len(translated_calls) == calls_before
+
+        # 入参校验
+        assert client.post('/api/pdf-outline-translate/sample',
+                           json={'titles': 'not a list'}).status_code == 400
+        assert client.post('/api/pdf-outline-translate/sample',
+                           json={'titles': ['x'], 'force': 'yes'}).status_code == 400
+        assert client.post('/api/pdf-outline-translate/..',
+                           json={'titles': ['x']}).status_code in (400, 404)
+
+    # 前端接线：标题带 dataset 标记、开启与关闭时分别翻译/还原
+    html = (Path(__file__).resolve().parents[1] / 'templates' / 'pdf_reader.html').read_text(encoding='utf-8')
+    import re
+    for label, pattern in {
+        '标题存原英文': r'class="toc-title" data-title=',
+        '开启时翻译': r'this\._request\(currentPage\);\s*\n\s*this\._prefetchAround\(currentPage\);\s*\n\s*this\._translateOutline\(\);',
+        '关闭时还原': r'this\._restoreOutline\(\);',
+        '提交标题到后端': r"/api/pdf-outline-translate/",
+        '写回译文': r'el\.textContent = translated;',
+        '保留英文悬停': r'el\.title = original;',
+        '标题已转义': r'function _escAttr',
+    }.items():
+        assert re.search(pattern, html), f'目录翻译接线缺失: {label}'
+
+def test_toc_does_not_use_scroll_into_view_for_the_sidebar():
+    """目录高亮项的滚动必须只作用于侧栏，不波及 PDF 正文。
+
+    scrollIntoView 会连带滚动所有可滚动祖先：一旦目录被包进新的滚动容器，
+    或它成为 PDF 视图的后代，正文就会被一起带走（用户曾反馈「展开目录后当前页
+    自动跳走」）。因此改用按侧栏自身 scrollTop 精确计算。
+    """
+    html = (Path(__file__).resolve().parents[1] / 'templates' / 'pdf_reader.html').read_text(encoding='utf-8')
+
+    # updateActive 里不得再对目录项调用 scrollIntoView
+    start = html.index('updateActive(page) {')
+    end = html.index('window.TOC = TOC;')
+    body = html[start:end]
+    assert 'activeEl.scrollIntoView' not in body, 'updateActive 仍在用 scrollIntoView'
+
+    # 新实现必须存在，且只操作侧栏的 scrollTop
+    assert 'TOC._revealActive(activeEl)' in body, '未切换到 _revealActive'
+    reveal_start = html.index('_revealActive(activeEl) {')
+    reveal = html[reveal_start:html.index('updateActive(page) {')]
+    assert "getElementById('sidebar')" in reveal, '未定位侧栏容器'
+    assert 'sidebar.scrollTop' in reveal, '未按侧栏自身滚动'
+    assert 'collapsed' in reveal, '侧栏折叠时不应滚动'
+
+    # 点击目录项跳转 PDF 页仍应滚动正文，这是预期行为，不能被一起删掉。
+    go_to = html[html.index('goTo(page) {'):html.index('_revealActive(activeEl) {')]
+    assert 'container.scrollIntoView' in go_to, '目录跳转应仍然滚动到目标页'
 
 
 def test_selected_model_wins():
