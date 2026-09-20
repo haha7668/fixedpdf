@@ -853,12 +853,41 @@ def test_prefetch_range_control_is_wired():
     for label, pattern in {
         '恢复已保存的范围': r"localStorage\.getItem\('pdf_bilingual_range'\)",
         '修改时持久化': r"localStorage\.setItem\('pdf_bilingual_range'",
-        '开启翻译时预取': r'this\._request\(currentPage\);[\s\S]{0,200}?this\._prefetchAround\(currentPage\)',
-        '翻页时触发预取': r'window\.Bilingual\?\._onPageChange\(currentPage\)',
+        '开启翻译时预取': r'this\._request\(currentPage(?:,\s*false,\s*true)?\);[\s\S]{0,200}?this\._prefetchAround\(currentPage\)',
+        '翻页时刷新状态': r'window\.Bilingual\?\._onPageChange\(currentPage\)',
         '按范围取前后页': r'Math\.max\(1, page - this\._range\)',
         '不越过末页': r'Math\.min\(pageContainers\.length, page \+ this\._range\)',
     }.items():
         assert re.search(pattern, html), f'预取范围接线缺失: {label}'
+
+
+def test_translation_waits_for_scroll_stop_not_passthrough():
+    """快速滚过的页不翻译：滚动停止后才对停留页翻译，滚动经过不排队。
+
+    此前 IntersectionObserver 一见到页面（视口附近 800px）就立即翻译，用户
+    快速滚动浏览时，途中每一页都被排队，状态栏出现「队列 29 页」这种远超
+    预翻译范围的数量。现在翻译由滚动停止后的防抖统一驱动，滚过的页不产生请求。
+    """
+    import re
+    html_path = Path(__file__).resolve().parents[1] / 'templates' / 'pdf_reader.html'
+    html = html_path.read_text(encoding='utf-8')
+
+    # onScroll 必须在滚动停止后（防抖）才触发 _settled。
+    assert re.search(r'clearTimeout\(_translateTimer\);[\s\S]{0,120}?_settled\(\)', html), \
+        '滚动停止防抖未接到 _settled'
+
+    # 停留页优先翻译，并以其为中心预取。
+    settled = re.search(r'_settled\(\) \{(.*?)\n        \},', html, re.S).group(1)
+    assert '_request(currentPage, false, true)' in settled, '停留页未按最高优先级请求'
+    assert '_prefetchAround(currentPage)' in settled, '停留页未触发预取'
+
+    # 翻页只刷新状态，不再逐页预取。
+    on_page = re.search(r'_onPageChange\(page\) \{(.*?)\n        \},', html, re.S).group(1)
+    assert '_prefetchAround' not in on_page, '翻页仍在逐页预取（快速滚动会排队）'
+
+    # 不得再有基于可见性的即时翻译请求。
+    assert "this._request(Number(entry.target.dataset.pageNum))" not in html, \
+        '仍存在按可见性即时翻译的旧逻辑'
 
 
 def test_lookup_popup_stays_closed_after_user_dismisses_it():
@@ -943,7 +972,7 @@ def test_outline_translation_is_wired_and_cached(source, monkeypatch):
     import re
     for label, pattern in {
         '标题存原英文': r'class="toc-title" data-title=',
-        '开启时翻译': r'this\._request\(currentPage\);\s*\n\s*this\._prefetchAround\(currentPage\);\s*\n\s*this\._translateOutline\(\);',
+        '开启时翻译': r'this\._request\(currentPage(?:,\s*false,\s*true)?\);\s*\n\s*this\._prefetchAround\(currentPage\);\s*\n\s*this\._translateOutline\(\);',
         '关闭时还原': r'this\._restoreOutline\(\);',
         '提交标题到后端': r"/api/pdf-outline-translate/",
         '写回译文': r'el\.textContent = translated;',

@@ -1220,7 +1220,7 @@
     }
 
     /* ========== Scroll Handling ========== */
-    let _scrollTimer = null, _lastScrollTop = 0, _positionTimer = null;
+    let _scrollTimer = null, _lastScrollTop = 0, _positionTimer = null, _translateTimer = null;
     function onScroll() {
         updatePageIndicator();
         autoHideControls();
@@ -1229,6 +1229,9 @@
         _positionTimer = setTimeout(() => {
             localStorage.setItem(`pdf_position_${BOOK_ID}`, JSON.stringify({ page: currentPage, scrollTop: viewer.scrollTop }));
         }, 500);
+        // 滚动停止后才对停留页触发翻译：快速滚过的页不会排队，停留页优先。
+        clearTimeout(_translateTimer);
+        _translateTimer = setTimeout(() => window.Bilingual?._settled(), 300);
     }
     function updatePageIndicator() {
         const scrollTop = viewer.scrollTop;
@@ -2858,8 +2861,8 @@
     /* ========== Structured Chinese PDF: preview equals export ========== */
     const Bilingual = {
         _on: false, _cache: new Map(), _queue: [], _active: 0, _blockedReason: '',
-        _pending: new Set(), _observer: null, MAX_CONCURRENT: 2,
-        _range: 0, _requestedRange: 0, _outlineStatus: '',
+        _pending: new Set(), MAX_CONCURRENT: 2,
+        _range: 0, _outlineStatus: '',
         init() {
             try { this._on = localStorage.getItem('pdf_bilingual') === '1'; } catch {}
             const checkbox = document.getElementById('toggle-bilingual');
@@ -2878,25 +2881,26 @@
                     this._status();
                 });
             }
-            this._observer = new IntersectionObserver(entries => {
-                for (const entry of entries) if (entry.isIntersecting)
-                    this._request(Number(entry.target.dataset.pageNum));
-            }, { root: viewer, rootMargin: '800px 0px' });
-            pageContainers.forEach(c => this._observer.observe(c));
+            // 翻译由「滚动停止」驱动：onScroll 里的防抖在用户停下后才调用
+            // _settled()，对当前停留页优先翻译并预取前后 N 页；快速滚过的页
+            // 不会触发，避免整段滚动被排队翻译。此处只处理初始进入时的当前页。
             if (this._on) {
-                this._request(currentPage);
+                this._request(currentPage, false, true);
                 this._prefetchAround(currentPage);
                 this._translateOutline();
             }
             this._status();
         },
-        /// 翻页时按范围预取。只在页号变化时触发，避免滚动过程中反复排队。
+        /// 翻页时只刷新状态栏；翻译由滚动停止后的 _settled 统一驱动，
+        /// 不再逐页触发预取，快速滚过的页因此不会被排队。
         _onPageChange(page) {
             this._status();
-            if (page !== this._requestedRange) {
-                this._requestedRange = page;
-                this._prefetchAround(page);
-            }
+        },
+        /// 滚动停止后调用：对当前停留页优先翻译，并以其为中心预取前后 N 页。
+        _settled() {
+            if (!this._on) return;
+            this._request(currentPage, false, true);
+            this._prefetchAround(currentPage);
         },
         _prefetchAround(page) {
             if (!this._on || this._range <= 0) return;
@@ -2911,13 +2915,14 @@
             if (!on) {
                 this._queue = [];
                 for (const [page, entry] of this._cache) if (entry.status === 'queued') this._cache.delete(page);
+                clearTimeout(_translateTimer);
                 this._restoreOutline();
             }
             pageContainers.forEach((_, i) => {
                 if (pageRendered[i] || renderingPages.has(i + 1)) this._rerenderPage(i + 1);
             });
             if (on) {
-                this._request(currentPage);
+                this._request(currentPage, false, true);
                 this._prefetchAround(currentPage);
                 this._translateOutline();
             }
@@ -2974,13 +2979,30 @@
             }
             this._outlineStatus = '';
         },
-        _request(pageNum, force = false) {
+        _request(pageNum, force = false, priority = false) {
             if (!this._on || pageNum < 1 || pageNum > pageContainers.length) return;
             const cached = this._cache.get(pageNum);
-            if (!force && cached) return; // Failed pages require an explicit retry.
             if (cached?.status === 'loading') return;
+            // done/error 页面除非显式重试，否则不再请求。
+            if (!force && cached && cached.status !== 'queued') return;
+            // 已在队列（queued）：停留页请求时把它提升到队首，优先翻译。
+            if (!force && cached?.status === 'queued') {
+                if (priority) {
+                    const idx = this._queue.findIndex(item => item.pageNum === pageNum);
+                    if (idx > 0) {
+                        const [item] = this._queue.splice(idx, 1);
+                        this._queue.unshift(item);
+                        this._status();
+                    }
+                }
+                return;
+            }
+            // 无缓存，或 force 重译：先清掉队列里的旧条目，再按优先级入队。
+            const idx = this._queue.findIndex(item => item.pageNum === pageNum);
+            if (idx >= 0) this._queue.splice(idx, 1);
             this._cache.set(pageNum, { status: 'queued' });
-            this._queue.push({ pageNum, force });
+            if (priority) this._queue.unshift({ pageNum, force });
+            else this._queue.push({ pageNum, force });
             this._pump();
         },
         _pump() {
@@ -3024,10 +3046,8 @@
             enqueueRender(pageNum);
         },
         render(pageNum, container) {
-            const rect = container.getBoundingClientRect();
-            const visible = viewer.getBoundingClientRect();
-            if (this._on && rect.bottom >= visible.top - 800 && rect.top <= visible.bottom + 800)
-                this._request(pageNum);
+            // 翻译触发已统一由滚动停止检测（onScroll 防抖 → _settled）负责，
+            // 这里不再按可见性即时请求，避免渲染循环里反复排队。
             this._status();
         },
         _status() {
@@ -3051,9 +3071,11 @@
             } else node.textContent = cached?.status === 'error' ? '翻译失败：' + cached.message : '正在生成中文 PDF，暂显示原文…';
             if (this._on && this._outlineStatus) node.textContent += '；' + this._outlineStatus;
             if (this._on && this._range > 0) {
-                const pendingPages = this._queue.length + this._active;
-                node.textContent += '；预翻译前后各 ' + this._range + ' 页' +
-                    (pendingPages ? '（队列 ' + pendingPages + ' 页）' : '');
+                node.textContent += '；预翻译前后各 ' + this._range + ' 页';
+            }
+            const pendingPages = this._queue.length + this._active;
+            if (this._on && pendingPages > 0) {
+                node.textContent += '；翻译队列 ' + pendingPages + ' 页';
             }
         },
         showDetails() {
