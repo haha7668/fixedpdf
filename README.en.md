@@ -87,3 +87,5 @@ For detailed configuration (offline dictionaries, multi-device access, port sett
 [GNU AGPL-3.0 License](LICENSE)
 
 > This project is distributed under AGPL-3.0 because it integrates [PyMuPDF](https://github.com/pymupdf/PyMuPDF) (AGPL-3.0). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party notices.
+>
+> Forked from the MIT-licensed [Smoothie Reader](https://github.com/Golden0Voyager/smoothie-reader); its original license and copyright notice are retained as required, see [LICENSES/upstream-smoothie-reader-MIT.txt](LICENSES/upstream-smoothie-reader-MIT.txt).

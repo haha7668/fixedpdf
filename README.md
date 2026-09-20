@@ -212,6 +212,8 @@ uninstall.bat --check
 本项目采用 [GNU Affero General Public License v3.0](LICENSE)（AGPL-3.0，Copyright (c) 2026 Haining Yu）。
 
 > 由于本项目集成了 [PyMuPDF](https://github.com/pymupdf/PyMuPDF)（AGPL-3.0），其 copyleft 条款要求本仓库同样以 AGPL-3.0 分发。集成各第三方开源库的许可与版权声明，请参见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+>
+> 本项目 fork 自 MIT 许可的 [Smoothie Reader](https://github.com/Golden0Voyager/smoothie-reader)，其原始许可证与版权声明已按 MIT 要求保留，见 [LICENSES/upstream-smoothie-reader-MIT.txt](LICENSES/upstream-smoothie-reader-MIT.txt)。
 
 ---
 

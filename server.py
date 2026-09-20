@@ -117,6 +117,9 @@ _DICT_FILES = {
     'cn_dict': {'filename': 'cn_dict.db',  'label': '中文词典',       'label_en': 'Chinese Dict',    'size_mb': 48,  'gz_mb': 25},
 }
 _DEFAULT_DICT_URL = 'https://github.com/Golden0Voyager/reader3-dict/releases/download/dict-v1'
+# 词典数据来源：ECDICT（https://github.com/skywind3000/ECDICT，MIT 许可），
+# 由上游项目转换为 SQLite 格式后分发；此处默认指向上游的发布地址。
+# 用户可在 AI 配置的 `dict_url` 中改为自建或其它可信来源，避免依赖第三方仓库。
 
 
 def _load_ai_config():
@@ -599,7 +602,12 @@ async def _chinese_define(word: str) -> str | None:
         return None
 
 async def _google_translate(text, dest='zh-CN'):
-    """Direct Google Translate API call, ~100ms with connection reuse."""
+    """Google Translate 兜底翻译。
+
+    使用公开的 ``translate.googleapis.com`` 端点，属于**非官方接口**，
+    仅供本地个人使用；如需商用请改用 Google Cloud Translation 官方 API。
+    调用链中它只作为最后兜底，优先走用户配置的 AI 服务商。
+    """
     resp = await _gt_client.get('https://translate.googleapis.com/translate_a/single', params={
         'client': 'gtx', 'sl': 'auto', 'tl': dest, 'dt': 't', 'q': text
     })
@@ -3069,7 +3077,11 @@ async def search_cover_online(book_id: str, req: dict = None):
 
 @app.get("/api/proxy-image")
 async def proxy_image(url: str):
-    """Proxy external images that block direct browser access (e.g. Douban)."""
+    """Proxy external images that block direct browser access (e.g. Douban).
+
+    仅代理豆瓣图片，供本地封面搜索功能使用；该功能依赖豆瓣公开搜索接口，
+    仅供个人学习使用，请遵守豆瓣的服务条款，不得用于批量抓取或商用。
+    """
     import urllib.request
     if "doubanio.com" not in url and "douban.com" not in url:
         raise HTTPException(status_code=400, detail="Only douban images supported")

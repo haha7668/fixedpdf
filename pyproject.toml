@@ -1,7 +1,7 @@
 [project]
 name = "fixedpdf"
 version = "0.1.0"
-description = "Simple EPUB reader web app"
+description = "Layout-preserving AI bilingual reader for PDF and EPUB documents"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "AGPL-3.0-only"
