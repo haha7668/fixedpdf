@@ -3103,12 +3103,13 @@ async def proxy_image(url: str):
 async def set_cover_from_url(book_id: str, req: dict):
     """Download an image URL and set it as the book cover."""
     safe_id = os.path.basename(book_id)
-    images_dir = os.path.join(BOOKS_DIR, safe_id, "images")
-    os.makedirs(images_dir, exist_ok=True)
-
     image_url = req.get("image_url", "")
     if not image_url:
         raise HTTPException(status_code=400, detail="No image URL provided")
+
+    # 先校验再建目录：否则请求一个不存在的 book_id 也会在书库里留下空目录
+    images_dir = os.path.join(BOOKS_DIR, safe_id, "images")
+    os.makedirs(images_dir, exist_ok=True)
 
     import urllib.request
     try:

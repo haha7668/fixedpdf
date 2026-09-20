@@ -1715,8 +1715,11 @@ class TestReprocess:
 
 
 class TestSetCover:
-    def test_no_url(self, client):
-        assert client.post('/api/set-cover/nonexistent', json={}).status_code == 400
+    def test_no_url(self, client, tmp_dir):
+        # 必须隔离 BOOKS_DIR：该路由会创建 <books>/<book_id>/images
+        with patch.object(server, 'BOOKS_DIR', tmp_dir):
+            assert client.post('/api/set-cover/nonexistent', json={}).status_code == 400
+        assert not os.path.exists(os.path.join(tmp_dir, 'nonexistent'))
 
     def test_set_cover_error(self, client, tmp_dir):
         book_dir = os.path.join(tmp_dir, 'err_book_data')
