@@ -6,6 +6,71 @@
 
 ---
 
+## ✨ 核心特性
+
+- **保留版式的 PDF 翻译**：识别真实表格单元格，翻译后表格、公式、引脚图、数字保持原位对齐，可直接下载整本中文 PDF。
+- **20+ AI 服务商开箱即用**：网页内可视化配置，支持 Ollama、本地 CLI，无需改代码。
+- **多模态输入 + 智能路由**：可粘贴/上传图片；有图自动走视觉模型、无图走文本模型。
+- **划词查词 · 双语对照 · TTS 朗读**：ECDICT 离线词典、三种对照模式（浮层 / 逐段 / 流式）、Edge-TTS 语音。
+- **本地部署，数据不出本机**：自带 API Key，无云依赖，隐私可控。
+
+---
+
+## 🚀 快速开始
+
+### 环境要求
+- Python 3.10+（本仓库验证环境：Python 3.12，Windows）
+
+### 一、Windows 双击启动（推荐）
+
+直接双击项目根目录的 **`start.bat`**。脚本会依次检查运行环境，缺失的部分给出下载或自动安装选项：
+
+| 检查项 | 缺失时的处理 |
+|--------|--------------|
+| Python 3.10+ | 可打开官方下载页，或用 winget 自动安装 |
+| 虚拟环境 `.venv` | 提供一键创建并安装依赖 |
+| 依赖组件 | 列出缺失的包，提供 `pip install -r requirements.txt` |
+| 服务端口 | 已在运行时直接打开浏览器，避免重复启动 |
+
+启动成功后会自动打开浏览器。**关闭该窗口即停止服务**（或按 Ctrl+C）。
+
+只想检查环境、不启动服务：
+
+```powershell
+start.bat --check
+```
+
+### 二、手动启动（跨平台）
+
+#### 1. 安装依赖（venv + pip）
+
+```powershell
+cd fixedpdf
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt pymupdf
+```
+
+> 说明：上游使用 `uv`，但本仓库在 Windows 环境已用 `venv + pip` 验证可用。`requirements.txt` 未包含 PyMuPDF，需额外安装。
+
+#### 2. 启动服务（Windows 需 UTF-8 模式）
+
+```powershell
+$env:PYTHONUTF8=1; $env:PYTHONIOENCODING="utf-8"
+.\.venv\Scripts\python.exe server.py
+```
+
+打开浏览器访问：**http://localhost:8123**
+
+### 三、配置 AI
+1. 上传 PDF/EPUB → 打开书
+2. 右上角**齿轮 → AI 翻译服务** → 选择服务商 → 填 API Key → 保存
+3. 建议：`模型` 填 `deepseek-chat`（文本/翻译），`视觉模型` 填 vision 模型（看图）
+
+### 四、双语对照
+设置面板打开「**双语对照翻译**」开关，选择「对照模式」（浮层 / 逐段对照 / 流式重排）。
+
+---
+
 ## 📌 上游来源
 
 本仓库 fork 自以下开源项目：
@@ -35,7 +100,7 @@
 
 ---
 
-## ✨ 新增功能（相对上游）
+## 📋 新增功能（相对上游）
 
 ### 1. PDF 阅读与保留版式翻译（核心新增）
 - **PDF 阅读器**：基于 pdf.js，支持目录导航、划词选择、全文搜索、高亮笔记、缩放。
@@ -86,61 +151,6 @@
 | 7 | **浮层定位错位**：`.bi-overlay` 缺少 `top: 0`，导致第一页译文偏移到第二页 | 补上 `top: 0` |
 | 8 | **Mermaid 代码块被破坏**：段落处理把代码块内容塞入 `</p><p>`，导致流程图渲染失败 | 用占位符方案保护代码块 |
 | 9 | **AI 对话无上下文**：每次提问独立，`用中文回答` 等指令失效 | 前端携带最近 12 条历史 + 后端拼接对话历史 |
-
----
-
-## 🚀 快速开始
-
-### 环境要求
-- Python 3.10+（本仓库验证环境：Python 3.12，Windows）
-
-### 一、Windows 双击启动（推荐）
-
-直接双击项目根目录的 **`start.bat`**。脚本会依次检查运行环境，缺失的部分给出下载或自动安装选项：
-
-| 检查项 | 缺失时的处理 |
-|--------|--------------|
-| Python 3.10+ | 可打开官方下载页，或用 winget 自动安装 |
-| 虚拟环境 `.venv` | 提供一键创建并安装依赖 |
-| 依赖组件 | 列出缺失的包，提供 `pip install -r requirements.txt` |
-| 服务端口 | 已在运行时直接打开浏览器，避免重复启动 |
-
-启动成功后会自动打开浏览器。**关闭该窗口即停止服务**（或按 Ctrl+C）。
-
-只想检查环境、不启动服务：
-
-```powershell
-start.bat --check
-```
-
-### 二、手动启动（跨平台）
-
-#### 1. 安装依赖（venv + pip）
-
-```powershell
-cd fixedpdf
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt pymupdf
-```
-
-> 说明：上游使用 `uv`，但本仓库在 Windows 环境已用 `venv + pip` 验证可用。`requirements.txt` 未包含 PyMuPDF，需额外安装。
-
-#### 2. 启动服务（Windows 需 UTF-8 模式）
-
-```powershell
-$env:PYTHONUTF8=1; $env:PYTHONIOENCODING="utf-8"
-.\.venv\Scripts\python.exe server.py
-```
-
-打开浏览器访问：**http://localhost:8123**
-
-### 3. 配置 AI
-1. 上传 PDF/EPUB → 打开书
-2. 右上角**齿轮 → AI 翻译服务** → 选择服务商 → 填 API Key → 保存
-3. 建议：`模型` 填 `deepseek-chat`（文本/翻译），`视觉模型` 填 vision 模型（看图）
-
-### 4. 双语对照
-设置面板打开「**双语对照翻译**」开关，选择「对照模式」（浮层 / 逐段对照 / 流式重排）。
 
 ---
 
