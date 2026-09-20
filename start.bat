@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 rem ============================================================================
-rem  Smoothie Reader (Reader3) - Windows 启动脚本
+rem  FixedPDF - Windows 启动脚本
 rem
 rem  双击即可运行。启动前检查运行环境（Python、虚拟环境、依赖组件），
 rem  缺失的部分会给出下载或自动安装选项。
@@ -28,11 +28,11 @@ set "PY_MIN_MINOR=10"
 set "CHECK_ONLY=0"
 if /i "%~1"=="--check" set "CHECK_ONLY=1"
 
-title Smoothie Reader - 启动中
+title FixedPDF - 启动中
 
 echo.
 echo ============================================================
-echo   Smoothie Reader (Reader3) - AI 文档阅读器
+echo   FixedPDF - AI 智能文档阅读器
 echo ============================================================
 
 rem ---------------------------------------------------------------------------
@@ -178,7 +178,7 @@ rem 批处理不便遍历映射，平铺以便定位到具体缺失项。
 set "DEPS_MISSING="
 call :dep fastapi       fastapi
 call :dep uvicorn       uvicorn
-call :dep fitz          pymupdf
+call :dep pymupdf       pymupdf
 call :dep bs4           beautifulsoup4
 call :dep jinja2        jinja2
 call :dep edge_tts      edge-tts
@@ -196,8 +196,9 @@ if errorlevel 1 set "DEPS_MISSING=!DEPS_MISSING! %~2"
 exit /b 0
 
 :service_running
-rem 端口可连接即认为服务已在运行
-"%VENV_PY%" -c "import socket,sys;s=socket.socket();s.settimeout(.3);sys.exit(0 if s.connect_ex(('127.0.0.1',8123))==0 else 1)" >nul 2>&1
+rem 只当 /api/health 应答出本项目的 app 标识才认为服务已就绪；
+rem 端口被别的程序占用时该端点会 404，从而避免误判成「服务已在运行」。
+"%VENV_PY%" -c "import urllib.request,sys;r=urllib.request.urlopen('http://127.0.0.1:8123/api/health',timeout=1);sys.exit(0 if b'fixedpdf' in r.read().lower() else 1)" >nul 2>&1
 exit /b %ERRORLEVEL%
 
 :offer_create_venv
@@ -237,11 +238,10 @@ echo ------------------------------------------------------------
 echo   安装缺失的依赖
 echo ------------------------------------------------------------
 echo     [1] 现在安装 ^(pip install -r requirements.txt^)
-echo     [2] 打开 Python 下载页 ^(重装 Python 亦可修复^)
 echo     [0] 退出
 echo.
 set "CH="
-set /p "CH=  请选择 [1/2/0]: "
+set /p "CH=  请选择 [1/0]: "
 if "!CH!"=="1" (
     echo.
     echo   正在安装 ...
@@ -253,7 +253,6 @@ if "!CH!"=="1" (
     call :check_deps
     exit /b 0
 )
-if "!CH!"=="2" start "" "%PY_DOWNLOAD_URL%"
 exit /b 1
 
 :no_python

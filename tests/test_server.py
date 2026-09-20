@@ -1191,6 +1191,11 @@ class TestLibraryEndpoint:
     def test_library_view(self, client):
         assert client.get('/').status_code == 200
 
+    def test_health(self, client):
+        resp = client.get('/api/health')
+        assert resp.status_code == 200
+        assert resp.json()['app'] == 'fixedpdf'
+
     def test_book_cover_404(self, client):
         assert client.get('/api/book-cover/nonexistent').status_code == 404
 

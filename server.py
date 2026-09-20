@@ -870,6 +870,16 @@ def _build_library_index():
             json.dump(index, f, ensure_ascii=False)
     return index
 
+@app.get("/api/health")
+async def health():
+    """轻量健康检查，供启动脚本确认本服务已就绪。
+
+    启动脚本探测 8123 端口时不能只看「端口可连接」——端口可能被别的程序占用。
+    脚本会请求本端点并核对 app 标识，只有真正的 FixedPDF 服务才会应答。
+    """
+    return {"app": "fixedpdf", "status": "ok"}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def library_view(request: Request):
     index = await asyncio.to_thread(_build_library_index)
