@@ -47,10 +47,10 @@ start.bat --check
 ```powershell
 cd fixedpdf
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt pymupdf
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-> 说明：上游使用 `uv`，但本仓库在 Windows 环境已用 `venv + pip` 验证可用。`requirements.txt` 未包含 PyMuPDF，需额外安装。
+> 说明：上游使用 `uv`，但本仓库在 Windows 环境已用 `venv + pip` 验证可用。
 
 #### 2. 启动服务（Windows 需 UTF-8 模式）
 
@@ -68,6 +68,23 @@ $env:PYTHONUTF8=1; $env:PYTHONIOENCODING="utf-8"
 
 ### 四、双语对照
 设置面板打开「**双语对照翻译**」开关，选择「对照模式」（浮层 / 逐段对照 / 流式重排）。
+
+### 五、卸载
+
+需要移除本程序安装的组件、恢复安装前的环境时，双击根目录的 **`uninstall.bat`**：
+
+| 选项 | 说明 |
+|------|------|
+| 完全卸载 | 程序组件 + 用户数据（书籍、翻译缓存、AI 配置与密钥） |
+| 标准卸载 | 仅程序组件（虚拟环境、缓存、词典、日志等），保留书籍与 AI 配置 |
+
+脚本会先检测服务是否在运行（避免文件占用导致删除失败），并提供预览模式——只列出将删除的内容、不实际删除：
+
+```powershell
+uninstall.bat --check
+```
+
+> 说明：卸载只移除安装/运行时产生的组件，项目源文件仍保留在原目录，需彻底移除时手动删除该文件夹即可。
 
 ---
 
